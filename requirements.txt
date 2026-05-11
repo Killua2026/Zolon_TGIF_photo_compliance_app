@@ -3,3 +3,4 @@ Pillow>=10.0.0
 Werkzeug>=2.3.0
 # Optional: enables .heic / .heif support
 pillow-heif>=0.13.0
+gunicorn==22.0.0
