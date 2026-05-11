@@ -1,0 +1,31 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Dependency directories
+__pycache__/
+*.py[cod]
+*$py.class
+
+# uv specific
+uv.lock
+
+# Project specific
+uploads/
+temp_uploads/
+*.csv
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo

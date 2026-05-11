@@ -1,0 +1,12 @@
+[project]
+name = "zolon-tgif-photo-compliance-app"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "flask>=2.3.0",
+    "pillow>=10.0.0",
+    "pillow-heif>=0.13.0",
+    "werkzeug>=2.3.0",
+]
