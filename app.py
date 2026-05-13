@@ -230,6 +230,11 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/logo-image")
+def logo_image():
+    return send_from_directory(BASE_DIR, "zolon logo.jpeg")
+
+
 @app.route("/upload", methods=["POST"])
 def upload():
     """

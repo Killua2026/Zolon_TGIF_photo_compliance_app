@@ -80,16 +80,24 @@
       height: 68px;
     }
     .logo-mark {
-      width: 40px; height: 40px;
-      background: var(--green-600);
-      border-radius: 10px;
-      display: grid; place-items: center;
-      font-family: var(--font-serif);
-      font-size: 1.1rem;
-      font-weight: 700;
-      color: var(--white);
+      width: fit-content;
+      min-height: 0;
+      padding: .22rem .3rem;
+      background: rgba(255,255,255,.98);
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       flex-shrink: 0;
-      letter-spacing: -.5px;
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.18);
+    }
+    .logo-image {
+      display: block;
+      width: auto;
+      max-width: 168px;
+      max-height: 30px;
+      object-fit: contain;
     }
     .logo-text { line-height: 1.25; }
     .logo-company {
@@ -589,22 +597,45 @@
       .gallery { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
       .upload-actions { flex-direction: column; align-items: stretch; }
 
-      /* Responsive header tweaks to avoid squished logo/text/pill */
+      /* Keep the logo pinned top-left while letting text flow beside it */
       .header-inner {
-        gap: .6rem;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        grid-template-areas:
+          "logo brand"
+          ". pill";
+        column-gap: .65rem;
+        row-gap: .35rem;
         height: auto;
-        padding: .45rem 0;
-        flex-wrap: wrap;
-        align-items: center;
+        padding: .45rem 0 .5rem;
+        align-items: start;
       }
-      .logo-mark { width: 36px; height: 36px; font-size: 1rem; border-radius: 8px; }
-      .logo-text { flex: 1 1 auto; min-width: 0; line-height: 1; }
-      .logo-company { font-size: .68rem; }
-      .logo-title   { font-size: .95rem; }
+      .logo-mark {
+        grid-area: logo;
+        width: fit-content;
+        min-height: 0;
+        padding: .18rem .24rem;
+        border-radius: 11px;
+        align-self: start;
+      }
+      .logo-image {
+        display: block;
+        max-width: 150px;
+        max-height: 26px;
+      }
+      .logo-text {
+        grid-area: brand;
+        min-width: 0;
+        line-height: 1.05;
+        align-self: center;
+      }
+      .logo-company { font-size: .66rem; }
+      .logo-title   { font-size: .92rem; }
       .header-pill {
-        margin-left: auto;
-        padding: .25rem .6rem;
-        font-size: .72rem;
+        grid-area: pill;
+        padding: .12rem .38rem;
+        font-size: .62rem;
+        justify-self: end;
       }
     }
   </style>
@@ -614,7 +645,9 @@
 <!-- ═══ HEADER ═══════════════════════════════════════════════════════════════ -->
 <header class="header">
   <div class="header-inner">
-    <div class="logo-mark">ZH</div>
+    <div class="logo-mark" aria-label="Zolon Healthcare Limited logo">
+      <img class="logo-image" src="../static/zolon-logo-no_bg.png" alt="Zolon Healthcare Limited" />
+    </div>
     <div class="logo-text">
       <div class="logo-company">Zolon Healthcare Ltd</div>
       <div class="logo-title">TGIF Photo Compliance Checker</div>
