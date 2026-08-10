@@ -2,6 +2,9 @@ Flask>=2.3.0
 Pillow>=10.0.0
 Werkzeug>=2.3.0
 psycopg2-binary==2.9.9
+boto3==1.34.131
+gunicorn==22.0.0
+
 # Optional: enables .heic / .heif support
 pillow-heif>=0.13.0
-gunicorn==22.0.0
+

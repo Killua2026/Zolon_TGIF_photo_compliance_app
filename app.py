@@ -17,7 +17,7 @@ from typing import Any, cast
 
 from flask import (
     Flask, request, jsonify, render_template,
-    send_file, send_from_directory
+    send_file, send_from_directory, redirect
 )
 from PIL import Image
 from PIL.ExifTags import TAGS
@@ -39,6 +39,14 @@ try:
 except ImportError:
     POSTGRES_AVAILABLE = False
 
+# ── Optional Boto3 (Backblaze B2 Integration) ────────────────────────────────
+try:
+    import boto3
+    from botocore.config import Config
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
+
 # ── App Setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
@@ -53,6 +61,12 @@ ALLOWED_EXT = {
 }
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Backblaze B2 environment variables
+B2_ENDPOINT_URL = os.environ.get("B2_ENDPOINT_URL")      # e.g., https://s3.us-west-004.backblazeb2.com
+B2_KEY_ID = os.environ.get("B2_KEY_ID")                  # keyID
+B2_APPLICATION_KEY = os.environ.get("B2_APPLICATION_KEY")  # applicationKey
+B2_BUCKET_NAME = os.environ.get("B2_BUCKET_NAME")        # bucket name
 
 # ── In‑memory progress store (for admin batch uploads only) ────────────────
 # { session_id: { progress, total, done, tgif_date, rep_name, created_at } }
@@ -130,6 +144,89 @@ def init_db():
 init_db()
 
 
+# ── Backblaze B2 Client Helpers ──────────────────────────────────────────────
+
+def is_b2_configured() -> bool:
+    """Check if all required B2 environment variables are set."""
+    return all([B2_ENDPOINT_URL, B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_NAME]) and BOTO3_AVAILABLE
+
+def get_b2_client():
+    if is_b2_configured():
+        endpoint_url = B2_ENDPOINT_URL
+        if not endpoint_url:
+            return None
+        endpoint = endpoint_url if endpoint_url.startswith("http") else f"https://{endpoint_url}"
+        return boto3.client(
+            service_name="s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=B2_KEY_ID,
+            aws_secret_access_key=B2_APPLICATION_KEY,
+            config=Config(signature_version="s3v4"),
+            region_name="us-east-1",  # Standard dummy region for S3 compatibility
+        )
+    return None
+
+def upload_file_to_b2(local_path: str, b2_key: str, content_type: str = "image/jpeg"):
+    s3 = get_b2_client()
+    if s3 and B2_BUCKET_NAME:
+        try:
+            s3.upload_file(
+                Filename=local_path,
+                Bucket=B2_BUCKET_NAME,
+                Key=b2_key,
+                ExtraArgs={"ContentType": content_type}
+            )
+            return True
+        except Exception as e:
+            print(f"[B2 Upload Error]: {e}")
+    return False
+
+def delete_b2_session_files(session_id: str):
+    s3 = get_b2_client()
+    if s3 and B2_BUCKET_NAME:
+        try:
+            response = s3.list_objects_v2(Bucket=B2_BUCKET_NAME, Prefix=f"{session_id}/")
+            if "Contents" in response:
+                objects = [{"Key": obj["Key"]} for obj in response["Contents"]]
+                s3.delete_objects(Bucket=B2_BUCKET_NAME, Delete={"Objects": objects})
+                print(f"[B2 Purge] Deleted {len(objects)} objects for session {session_id}")
+        except Exception as e:
+            print(f"[B2 Delete Error]: {e}")
+
+def get_b2_presigned_url(b2_key: str) -> str | None:
+    s3 = get_b2_client()
+    if s3 and B2_BUCKET_NAME:
+        try:
+            url = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': B2_BUCKET_NAME, 'Key': b2_key},
+                ExpiresIn=3600  # Valid for 1 hour
+            )
+            return url
+        except Exception as e:
+            print(f"[Presigned URL Error]: {e}")
+    return None
+
+def generate_and_upload_thumb(local_path: str, session_id: str, safe_name: str):
+    """Generates a thumbnail locally and pushes it to Backblaze B2."""
+    if not is_b2_configured():
+        return  # Skip if B2 not available
+    try:
+        img = Image.open(local_path)
+        img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+
+        thumb_dir = os.path.dirname(local_path)
+        thumb_path = os.path.join(thumb_dir, f"thumb_{safe_name}")
+        img.save(thumb_path, format="JPEG", quality=80)
+
+        # Upload thumbnail to Backblaze B2
+        upload_file_to_b2(thumb_path, f"{session_id}/thumb_{safe_name}")
+    except Exception as e:
+        print(f"[Thumbnail Generation Error]: {e}")
+
+
 # ── Automated 7-Day Retention Purge Thread ────────────────────────────────────
 
 def purge_expired_7day_data():
@@ -148,6 +245,8 @@ def purge_expired_7day_data():
                 expired_sids = [r[0] for r in rows]
 
                 for sid in expired_sids:
+                    # Delete from Backblaze B2
+                    delete_b2_session_files(sid)
                     # Delete physical image folder
                     folder = os.path.join(UPLOAD_BASE, sid)
                     shutil.rmtree(folder, ignore_errors=True)
@@ -163,6 +262,7 @@ def purge_expired_7day_data():
                 expired_sids = [r[0] for r in rows]
 
                 for sid in expired_sids:
+                    delete_b2_session_files(sid)
                     folder = os.path.join(UPLOAD_BASE, sid)
                     shutil.rmtree(folder, ignore_errors=True)
 
@@ -322,6 +422,10 @@ def process_admin_batch(session_id: str, tgif_date: str):
                 VALUES (?, ?, ?, ?, ?, ?);
             """, (session_id, filename, date_str, source, status, 1 if compliant else 0))
 
+        # Upload original and thumbnail to Backblaze B2
+        upload_file_to_b2(filepath, f"{session_id}/{filename}")
+        generate_and_upload_thumb(filepath, session_id, filename)
+
         # Update progress
         with SESSIONS_LOCK:
             if session_id in SESSIONS:
@@ -331,10 +435,12 @@ def process_admin_batch(session_id: str, tgif_date: str):
     cur.close()
     conn.close()
 
-    # Mark as done
+    # Mark as done and delete local folder after uploads
     with SESSIONS_LOCK:
         if session_id in SESSIONS:
             SESSIONS[session_id]["done"] = True
+
+    shutil.rmtree(folder, ignore_errors=True)
 
 
 # ── Flask Web Routes ─────────────────────────────────────────────────────────
@@ -486,11 +592,18 @@ def submit_rep_photos():
                 VALUES (?, ?, ?, ?, ?, ?);
             """, (session_id, safe_name, date_str, source, status, 1 if is_compliant else 0))
 
+        # Upload original and thumbnail to Backblaze B2
+        upload_file_to_b2(file_path, f"{session_id}/{safe_name}")
+        generate_and_upload_thumb(file_path, session_id, safe_name)
+
         saved_count += 1
 
     conn.commit()
     cur.close()
     conn.close()
+
+    # Clean local temporary files after B2 upload completes
+    shutil.rmtree(folder, ignore_errors=True)
 
     return jsonify({
         "session_id": session_id,
@@ -567,24 +680,40 @@ def results(session_id: str):
 
 @app.route("/thumb/<session_id>/<path:filename>")
 def thumb(session_id: str, filename: str):
+    # Try Backblaze B2 presigned URL redirect
+    b2_url = get_b2_presigned_url(f"{session_id}/thumb_{filename}")
+    if b2_url:
+        return redirect(b2_url)
+
+    # Local disk fallback
     folder = os.path.join(UPLOAD_BASE, session_id)
-    filepath = os.path.join(folder, filename)
+    filepath = os.path.join(folder, f"thumb_{filename}")
     if not os.path.isfile(filepath):
+        # Try to generate on the fly if original exists (legacy)
+        orig_path = os.path.join(folder, filename)
+        if os.path.isfile(orig_path):
+            try:
+                img = Image.open(orig_path)
+                img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=80)
+                buf.seek(0)
+                return send_file(buf, mimetype="image/jpeg")
+            except Exception:
+                pass
         return "", 404
-    try:
-        img = Image.open(filepath)
-        img.thumbnail((320, 320), Image.Resampling.LANCZOS)
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
-        buf = BytesIO()
-        img.save(buf, format="JPEG", quality=80)
-        buf.seek(0)
-        return send_file(buf, mimetype="image/jpeg")
-    except Exception:
-        return "", 500
+    return send_file(filepath)
 
 @app.route("/image/<session_id>/<path:filename>")
 def serve_image(session_id: str, filename: str):
+    # Try Backblaze B2 presigned URL redirect
+    b2_url = get_b2_presigned_url(f"{session_id}/{filename}")
+    if b2_url:
+        return redirect(b2_url)
+
+    # Local disk fallback
     folder = os.path.join(UPLOAD_BASE, session_id)
     return send_from_directory(folder, filename)
 
