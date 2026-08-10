@@ -114,17 +114,29 @@
       color: var(--white);
       letter-spacing: -.01em;
     }
-    .header-pill {
+
+    /* Header actions (merged from version 2(imaginary coworker)) */
+    .header-actions {
       margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      flex-shrink: 0;
+    }
+    .btn-header {
       background: var(--green-700);
       border: 1px solid var(--green-600);
       border-radius: 999px;
-      padding: .3rem .85rem;
-      font-size: .75rem;
-      font-weight: 500;
-      color: rgba(255,255,255,.8);
-      letter-spacing: .04em;
+      padding: .4rem .9rem;
+      font-size: .78rem;
+      font-weight: 600;
+      color: var(--white);
+      cursor: pointer;
+      text-decoration: none;
+      transition: background .15s;
+      white-space: nowrap;
     }
+    .btn-header:hover { background: var(--green-600); }
 
     /* ── Layout ─────────────────────────────────────────────────────────── */
     .page {
@@ -597,13 +609,14 @@
       .gallery { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
       .upload-actions { flex-direction: column; align-items: stretch; }
 
-      /* Keep the logo pinned top-left while letting text flow beside it */
+      /* Keep the logo pinned top-left while letting text flow beside it,
+         and put the actions in a separate row or column */
       .header-inner {
         display: grid;
-        grid-template-columns: auto 1fr;
+        grid-template-columns: auto 1fr auto;
         grid-template-areas:
-          "logo brand"
-          ". pill";
+          "logo brand actions"
+          ". . .";
         column-gap: .65rem;
         row-gap: .35rem;
         height: auto;
@@ -631,11 +644,18 @@
       }
       .logo-company { font-size: .66rem; }
       .logo-title   { font-size: .92rem; }
-      .header-pill {
-        grid-area: pill;
-        padding: .12rem .38rem;
-        font-size: .62rem;
-        justify-self: end;
+      .header-actions {
+        grid-area: actions;
+        display: flex;
+        flex-direction: column;
+        gap: .3rem;
+        align-items: flex-end;
+        margin-left: 0;
+      }
+      .btn-header {
+        font-size: .65rem;
+        padding: .2rem .5rem;
+        white-space: nowrap;
       }
     }
   </style>
@@ -652,12 +672,34 @@
       <div class="logo-company">Zolon Healthcare Ltd</div>
       <div class="logo-title">TGIF Compliance Checker</div>
     </div>
-    <span class="header-pill">Admin Tool</span>
+    <!-- Header actions – merged from imaginary coworker's version -->
+    <div class="header-actions">
+      <button class="btn-header" onclick="copyRepLink()">📱 Copy Rep Upload Link</button>
+      <a href="/submit" target="_blank" class="btn-header">Open Rep Portal ↗</a>
+    </div>
   </div>
 </header>
 
 <!-- ═══ MAIN PAGE ════════════════════════════════════════════════════════════ -->
 <main class="page">
+
+  <!-- ── LIVE REP SUBMISSIONS FEED ────────────────────────────────────── -->
+  <section class="card" id="section-rep-feed">
+    <div class="card-header">
+      <div class="step-badge">📱</div>
+      <div>
+        <div class="card-title">Live Sales Rep Submissions</div>
+        <div class="card-subtitle">Recent submissions uploaded directly from reps' mobile devices</div>
+      </div>
+      <button class="btn btn-outline" onclick="loadRepSubmissions()" style="margin-left:auto;font-size:0.78rem;">
+        🔄 Refresh Feed
+      </button>
+    </div>
+
+    <div id="rep-feed-list" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem;">
+      <div style="color:var(--slate-500); font-size:0.88rem;">Loading submissions...</div>
+    </div>
+  </section>
 
   <!-- ── STEP 1: Select Event Date ────────────────────────────────────── -->
   <section id="section-setup" class="card">
@@ -1213,6 +1255,14 @@ function escHtml(s) {
     .replace(/"/g,'&quot;');
 }
 
+/* ── Copy Rep Upload Link (merged from version 2(imaginary coworker)) ────────────────────── */
+function copyRepLink() {
+  const url = window.location.origin + '/submit';
+  navigator.clipboard.writeText(url).then(() => {
+    alert('Link copied to clipboard!\n\nShare this with sales reps:\n' + url);
+  });
+}
+
 /* ── Init: set default date to today ──────────────────────────────────── */
 (function init() {
   const today = new Date();
@@ -1221,6 +1271,49 @@ function escHtml(s) {
   const dd    = String(today.getDate()).padStart(2, '0');
   $('tgif-date').value = `${yyyy}-${mm}-${dd}`;
 })();
+
+async function loadRepSubmissions() {
+  const container = document.getElementById('rep-feed-list');
+  try {
+    const resp = await fetch('/api/admin/submissions');
+    const data = await resp.json();
+
+    if (!data.submissions || data.submissions.length === 0) {
+      container.innerHTML = `<div style="color:var(--slate-400); font-size:0.88rem; grid-column:1/-1;">No rep submissions received in the current session.</div>`;
+      return;
+    }
+
+    container.innerHTML = data.submissions.map(sub => `
+      <div style="background:var(--slate-50); border:1px solid var(--slate-200); border-radius:var(--radius-md); padding:1rem;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.5rem;">
+          <div>
+            <strong style="color:var(--slate-900); font-size:0.95rem;">${sub.rep_name}</strong>
+            <div style="font-size:0.75rem; color:var(--slate-500);">Submitted at ${sub.created_at}</div>
+          </div>
+          <span class="gallery-badge" style="background:var(--green-100); color:var(--green-800);">${sub.tgif_date}</span>
+        </div>
+        <div style="display:flex; gap:0.5rem; margin:0.75rem 0; font-size:0.8rem;">
+          <span style="background:var(--slate-200); padding:0.2rem 0.5rem; border-radius:4px;">Total: <strong>${sub.total}</strong></span>
+          <span style="background:var(--green-50); color:var(--green-700); padding:0.2rem 0.5rem; border-radius:4px;">OK: <strong>${sub.compliant}</strong></span>
+          <span style="background:var(--red-50); color:var(--red-600); padding:0.2rem 0.5rem; border-radius:4px;">Flagged: <strong>${sub.flagged}</strong></span>
+        </div>
+        <button class="btn btn-primary" style="width:100%; font-size:0.8rem; justify-content:center;" onclick="viewRepSession('${sub.session_id}')">
+          🔍 View Submission Report
+        </button>
+      </div>
+    `).join('');
+  } catch (err) {
+    container.innerHTML = `<div style="color:var(--red-600); font-size:0.88rem;">Failed to load rep submissions.</div>`;
+  }
+}
+
+async function viewRepSession(sessionId) {
+  currentSession = sessionId;
+  await loadResults();
+}
+
+// Automatically load feed on page launch
+document.addEventListener('DOMContentLoaded', loadRepSubmissions);
 </script>
 </body>
 </html>

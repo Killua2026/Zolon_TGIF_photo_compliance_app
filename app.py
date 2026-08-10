@@ -1,6 +1,7 @@
 """
 Zolon Healthcare Ltd – TGIF Photo Compliance Checker
-Flask backend: upload, EXIF extraction, compliance checking, temp cleanup.
+Production Flask app with PostgreSQL storage, 7-day automated cleanup,
+and support for Admin Batch Uploads plus Direct Sales Rep Submissions.
 """
 
 import os
@@ -8,9 +9,11 @@ import csv
 import uuid
 import time
 import shutil
+import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO, BytesIO
+from typing import Any, cast
 
 from flask import (
     Flask, request, jsonify, render_template,
@@ -28,38 +31,179 @@ try:
 except ImportError:
     HEIC_SUPPORTED = False
 
-# ── App setup ────────────────────────────────────────────────────────────────
+# ── Optional PostgreSQL Driver ───────────────────────────────────────────────
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    POSTGRES_AVAILABLE = True
+except ImportError:
+    POSTGRES_AVAILABLE = False
+
+# ── App Setup ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
 
-BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_BASE  = os.path.join(BASE_DIR, "uploads")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_BASE = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_BASE, exist_ok=True)
 
 ALLOWED_EXT = {
     ".jpg", ".jpeg", ".png", ".webp", ".heic",
     ".tiff", ".tif", ".bmp", ".gif"
 }
-SESSION_TTL = 3600          # seconds – auto-delete uploads after 1 hour
-CLEANUP_INTERVAL = 300      # seconds – cleanup thread wakes every 5 min
 
-# ── In-memory session store ──────────────────────────────────────────────────
-# { session_id: { progress, total, results, done, tgif_date, created_at } }
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# ── In‑memory progress store (for admin batch uploads only) ────────────────
+# { session_id: { progress, total, done, tgif_date, rep_name, created_at } }
 SESSIONS: dict = {}
 SESSIONS_LOCK = threading.Lock()
 
+# ── Database Connection & Initialization ─────────────────────────────────────
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+def get_db_connection():
+    """Returns a PostgreSQL connection if DATABASE_URL is set, else SQLite connection."""
+    if DATABASE_URL and POSTGRES_AVAILABLE:
+        # Render/Neon postgres URLs sometimes start with postgres://
+        conn_str = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        conn = psycopg2.connect(conn_str)
+        return conn, "postgres"
+    else:
+        # Fallback for local testing without Neon
+        db_path = os.path.join(BASE_DIR, "local_database.db")
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn, "sqlite"
+
+def init_db():
+    """Initializes schema for PostgreSQL or SQLite."""
+    conn, db_type = get_db_connection()
+    cur = conn.cursor()
+
+    if db_type == "postgres":
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS submissions (
+                session_id VARCHAR(64) PRIMARY KEY,
+                rep_name VARCHAR(255) NOT NULL,
+                tgif_date VARCHAR(10) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS submission_files (
+                id SERIAL PRIMARY KEY,
+                session_id VARCHAR(64) REFERENCES submissions(session_id) ON DELETE CASCADE,
+                filename VARCHAR(255) NOT NULL,
+                extracted_date VARCHAR(10),
+                source VARCHAR(50),
+                status VARCHAR(50),
+                is_compliant BOOLEAN NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+    else:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS submissions (
+                session_id TEXT PRIMARY KEY,
+                rep_name TEXT NOT NULL,
+                tgif_date TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS submission_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                filename TEXT NOT NULL,
+                extracted_date TEXT,
+                source TEXT,
+                status TEXT,
+                is_compliant INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES submissions(session_id) ON DELETE CASCADE
+            );
+        """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Run DB initialization at startup
+init_db()
+
+
+# ── Automated 7-Day Retention Purge Thread ────────────────────────────────────
+
+def purge_expired_7day_data():
+    """Background daemon running every 4 hours to purge records & images > 7 days old."""
+    while True:
+        try:
+            conn, db_type = get_db_connection()
+            cur = conn.cursor()
+
+            if db_type == "postgres":
+                cur.execute("""
+                    SELECT session_id FROM submissions 
+                    WHERE created_at < NOW() - INTERVAL '7 days';
+                """)
+                rows = cur.fetchall()
+                expired_sids = [r[0] for r in rows]
+
+                for sid in expired_sids:
+                    # Delete physical image folder
+                    folder = os.path.join(UPLOAD_BASE, sid)
+                    shutil.rmtree(folder, ignore_errors=True)
+
+                if expired_sids:
+                    cur.execute("DELETE FROM submissions WHERE created_at < NOW() - INTERVAL '7 days';")
+                    conn.commit()
+                    print(f"[Auto-Purge] Cleaned {len(expired_sids)} submissions older than 7 days.")
+            else:
+                seven_days_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+                cur.execute("SELECT session_id FROM submissions WHERE created_at < ?;", (seven_days_ago,))
+                rows = cur.fetchall()
+                expired_sids = [r[0] for r in rows]
+
+                for sid in expired_sids:
+                    folder = os.path.join(UPLOAD_BASE, sid)
+                    shutil.rmtree(folder, ignore_errors=True)
+
+                if expired_sids:
+                    cur.execute("DELETE FROM submissions WHERE created_at < ?;", (seven_days_ago,))
+                    conn.commit()
+
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"[Purge Thread Error]: {e}")
+
+        # Check every 4 hours (14,400 seconds)
+        time.sleep(14400)
+
+threading.Thread(target=purge_expired_7day_data, daemon=True).start()
+
+
+# ── In‑memory session cleanup (for progress tracking only) ───────────────────
+def _cleanup_sessions():
+    """Remove stale progress entries older than 1 hour."""
+    while True:
+        time.sleep(300)  # every 5 minutes
+        now = time.time()
+        with SESSIONS_LOCK:
+            expired = [
+                sid for sid, data in SESSIONS.items()
+                if now - data.get("created_at", now) > 3600
+            ]
+            for sid in expired:
+                SESSIONS.pop(sid, None)
+
+threading.Thread(target=_cleanup_sessions, daemon=True).start()
+
+
+# ── Metadata Extraction Helpers ──────────────────────────────────────────────
 
 def allowed_file(filename: str) -> bool:
     return os.path.splitext(filename)[1].lower() in ALLOWED_EXT
 
-
 def unique_filename(folder: str, filename: str) -> str:
-    """
-    If `filename` already exists in `folder`, append (1), (2), …
-    before the extension, e.g.  photo.jpg → photo(1).jpg.
-    """
     name, ext = os.path.splitext(filename)
     candidate = filename
     counter = 1
@@ -68,18 +212,12 @@ def unique_filename(folder: str, filename: str) -> str:
         counter += 1
     return candidate
 
-
 def _parse_exif_datestr(raw) -> str | None:
-    """
-    Convert an EXIF date string 'YYYY:MM:DD HH:MM:SS' →  'YYYY-MM-DD'.
-    Returns None on any parse failure.
-    """
     try:
-        date_part = str(raw).split(" ")[0]          # discard time component
+        date_part = str(raw).split(" ")[0]
         parts = date_part.split(":")
         if len(parts) == 3:
             y, m, d = parts
-            # Basic sanity check
             if y.isdigit() and m.isdigit() and d.isdigit():
                 if 1900 < int(y) < 2100 and 1 <= int(m) <= 12 and 1 <= int(d) <= 31:
                     return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
@@ -87,29 +225,11 @@ def _parse_exif_datestr(raw) -> str | None:
         pass
     return None
 
+def get_image_date(filepath: str, fallback_timestamp_ms: str | None = None) -> tuple[str | None, str]:
+    EXIF_DATE_TAGS = {36867: "DateTimeOriginal", 36868: "DateTimeDigitized", 306: "DateTime"}
 
-def get_image_date(filepath: str) -> tuple[str | None, str]:
-    """
-    Extract the capture date from an image file.
-
-    Priority:
-      1. EXIF DateTimeOriginal  (tag 36867)
-      2. EXIF DateTimeDigitized (tag 36868)
-      3. EXIF DateTime          (tag 306)
-      4. File modification time (os.path.getmtime)
-
-    Returns  (date_str, source)  where date_str is 'YYYY-MM-DD' or None,
-    and source is one of: 'exif', 'file_date', 'no_metadata'.
-    """
-    EXIF_DATE_TAGS = {36867: "DateTimeOriginal",
-                      36868: "DateTimeDigitized",
-                      306:   "DateTime"}
-
-    # ── 1 + 2 + 3: Try Pillow EXIF ──────────────────────────────────────────
     try:
         img = Image.open(filepath)
-
-        # Modern API (works for JPEG, TIFF, WebP, HEIC via pillow-heif)
         try:
             exif = img.getexif()
             if exif:
@@ -122,10 +242,10 @@ def get_image_date(filepath: str) -> tuple[str | None, str]:
         except Exception:
             pass
 
-        # Legacy JPEG API
         try:
-            if hasattr(img, "_getexif"):
-                raw_exif = img._getexif()  # type: ignore[attr-defined]
+            raw_getexif = getattr(img, "_getexif", None)
+            if callable(raw_getexif):
+                raw_exif = cast(dict[int, Any], raw_getexif())
                 if raw_exif:
                     for tag_id, value in raw_exif.items():
                         if tag_id in EXIF_DATE_TAGS:
@@ -134,29 +254,29 @@ def get_image_date(filepath: str) -> tuple[str | None, str]:
                                 return parsed, "exif"
         except Exception:
             pass
-
     except Exception:
         pass
 
-    # ── 4: Fallback – file modification time ─────────────────────────────────
+    if fallback_timestamp_ms and str(fallback_timestamp_ms).isdigit():
+        try:
+            ts_sec = float(fallback_timestamp_ms) / 1000.0
+            return datetime.fromtimestamp(ts_sec).strftime("%Y-%m-%d"), "file_date"
+        except Exception:
+            pass
+
     try:
         mtime = os.path.getmtime(filepath)
-        date_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
-        return date_str, "file_date"
+        return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d"), "file_date"
     except Exception:
         pass
 
     return None, "no_metadata"
 
 
-# ── Background: image processing ────────────────────────────────────────────
+# ── Background processing for Admin Batch Uploads ──────────────────────────
 
-def process_images(session_id: str, tgif_date: str):
-    """
-    Runs in a daemon thread.
-    Iterates over every saved image, compares its date to tgif_date,
-    and writes results back to SESSIONS[session_id].
-    """
+def process_admin_batch(session_id: str, tgif_date: str):
+    """Process each image in the session folder, update DB and progress."""
     folder = os.path.join(UPLOAD_BASE, session_id)
     try:
         files = sorted(
@@ -168,9 +288,12 @@ def process_images(session_id: str, tgif_date: str):
 
     total = len(files)
     with SESSIONS_LOCK:
-        SESSIONS[session_id]["total"] = total
+        if session_id in SESSIONS:
+            SESSIONS[session_id]["total"] = total
 
-    results = []
+    conn, db_type = get_db_connection()
+    cur = conn.cursor()
+
     for i, filename in enumerate(files):
         filepath = os.path.join(folder, filename)
         date_str, source = get_image_date(filepath)
@@ -185,67 +308,54 @@ def process_images(session_id: str, tgif_date: str):
             status = "non_compliant"
             compliant = False
 
-        results.append({
-            "filename": filename,
-            "date":     date_str,
-            "source":   source,
-            "status":   status,
-            "compliant": compliant,
-        })
+        # Insert into DB
+        if db_type == "postgres":
+            cur.execute("""
+                INSERT INTO submission_files 
+                (session_id, filename, extracted_date, source, status, is_compliant) 
+                VALUES (%s, %s, %s, %s, %s, %s);
+            """, (session_id, filename, date_str, source, status, compliant))
+        else:
+            cur.execute("""
+                INSERT INTO submission_files 
+                (session_id, filename, extracted_date, source, status, is_compliant) 
+                VALUES (?, ?, ?, ?, ?, ?);
+            """, (session_id, filename, date_str, source, status, 1 if compliant else 0))
 
+        # Update progress
         with SESSIONS_LOCK:
-            SESSIONS[session_id]["progress"] = i + 1
+            if session_id in SESSIONS:
+                SESSIONS[session_id]["progress"] = i + 1
 
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # Mark as done
     with SESSIONS_LOCK:
-        SESSIONS[session_id]["results"] = results
-        SESSIONS[session_id]["done"]    = True
+        if session_id in SESSIONS:
+            SESSIONS[session_id]["done"] = True
 
 
-# ── Background: cleanup expired sessions ─────────────────────────────────────
-
-def _cleanup_loop():
-    while True:
-        time.sleep(CLEANUP_INTERVAL)
-        now = time.time()
-        with SESSIONS_LOCK:
-            expired = [
-                sid for sid, d in SESSIONS.items()
-                if now - d.get("created_at", now) > SESSION_TTL
-            ]
-        for sid in expired:
-            folder = os.path.join(UPLOAD_BASE, sid)
-            shutil.rmtree(folder, ignore_errors=True)
-            with SESSIONS_LOCK:
-                SESSIONS.pop(sid, None)
-
-
-_cleanup_thread = threading.Thread(target=_cleanup_loop, daemon=True)
-_cleanup_thread.start()
-
-
-# ── Routes ───────────────────────────────────────────────────────────────────
+# ── Flask Web Routes ─────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
+    """Admin Dashboard"""
     return render_template("index.html")
 
-
-@app.route("/logo-image")
-def logo_image():
-    return send_from_directory(BASE_DIR, "zolon logo.jpeg")
-
+@app.route("/submit")
+def rep_submit_page():
+    """Sales Rep Mobile Portal"""
+    return render_template("submit.html")
 
 @app.route("/upload", methods=["POST"])
-def upload():
-    """
-    Accept files + tgif_date, save to a session folder, kick off
-    background processing, return { session_id, total_saved }.
-    """
+def admin_upload():
+    """Admin batch upload endpoint."""
     tgif_date = (request.form.get("tgif_date") or "").strip()
     if not tgif_date:
         return jsonify({"error": "No TGIF date provided."}), 400
 
-    # Validate date format
     try:
         datetime.strptime(tgif_date, "%Y-%m-%d")
     except ValueError:
@@ -259,22 +369,27 @@ def upload():
     folder = os.path.join(UPLOAD_BASE, session_id)
     os.makedirs(folder, exist_ok=True)
 
-    with SESSIONS_LOCK:
-        SESSIONS[session_id] = {
-            "progress":   0,
-            "total":      0,
-            "results":    [],
-            "done":       False,
-            "tgif_date":  tgif_date,
-            "created_at": time.time(),
-        }
+    # Insert submission record (rep_name = "Admin" for batch uploads)
+    conn, db_type = get_db_connection()
+    cur = conn.cursor()
+    if db_type == "postgres":
+        cur.execute(
+            "INSERT INTO submissions (session_id, rep_name, tgif_date) VALUES (%s, %s, %s);",
+            (session_id, "Admin", tgif_date)
+        )
+    else:
+        cur.execute(
+            "INSERT INTO submissions (session_id, rep_name, tgif_date) VALUES (?, ?, ?);",
+            (session_id, "Admin", tgif_date)
+        )
+    conn.commit()
+    cur.close()
+    conn.close()
 
-    # Save files (synchronous; XHR progress handles the transfer phase)
     saved = 0
     for f in files:
         if not f or not f.filename:
             continue
-        # Use only the basename (handles webkitdirectory relative paths)
         basename = os.path.basename(secure_filename(f.filename))
         if not basename or not allowed_file(basename):
             continue
@@ -284,54 +399,174 @@ def upload():
 
     if saved == 0:
         shutil.rmtree(folder, ignore_errors=True)
-        with SESSIONS_LOCK:
-            SESSIONS.pop(session_id, None)
         return jsonify({"error": "No valid image files found."}), 400
 
+    with SESSIONS_LOCK:
+        SESSIONS[session_id] = {
+            "progress": 0,
+            "total": 0,          # will be set in background thread
+            "done": False,
+            "tgif_date": tgif_date,
+            "rep_name": "Admin",
+            "created_at": time.time(),
+        }
+
     # Start background processing
-    t = threading.Thread(target=process_images,
-                         args=(session_id, tgif_date),
-                         daemon=True)
+    t = threading.Thread(target=process_admin_batch, args=(session_id, tgif_date), daemon=True)
     t.start()
 
     return jsonify({"session_id": session_id, "total_saved": saved})
 
+@app.route("/api/submit-rep-photos", methods=["POST"])
+def submit_rep_photos():
+    """API Endpoint for direct phone uploads from Sales Reps."""
+    rep_name = (request.form.get("rep_name") or "Anonymous Rep").strip()
+    tgif_date = (request.form.get("tgif_date") or "").strip()
+    files = request.files.getlist("images")
+
+    if not tgif_date or not files:
+        return jsonify({"error": "Please specify the TGIF date and select photos."}), 400
+
+    session_id = str(uuid.uuid4())
+    folder = os.path.join(UPLOAD_BASE, session_id)
+    os.makedirs(folder, exist_ok=True)
+
+    # Insert submission record
+    conn, db_type = get_db_connection()
+    cur = conn.cursor()
+    if db_type == "postgres":
+        cur.execute(
+            "INSERT INTO submissions (session_id, rep_name, tgif_date) VALUES (%s, %s, %s);",
+            (session_id, rep_name, tgif_date)
+        )
+    else:
+        cur.execute(
+            "INSERT INTO submissions (session_id, rep_name, tgif_date) VALUES (?, ?, ?);",
+            (session_id, rep_name, tgif_date)
+        )
+
+    saved_count = 0
+    compliant_count = 0
+    flagged_count = 0
+
+    for f in files:
+        if not f or not f.filename:
+            continue
+        original_name = os.path.basename(secure_filename(f.filename))
+        if not original_name or not allowed_file(original_name):
+            continue
+
+        safe_name = unique_filename(folder, original_name)
+        file_path = os.path.join(folder, safe_name)
+        f.save(file_path)
+
+        fallback_ms = request.form.get(f"lm_{f.filename}")
+        date_str, source = get_image_date(file_path, fallback_ms)
+
+        if date_str == tgif_date and source != "no_metadata":
+            status = "compliant"
+            is_compliant = True
+            compliant_count += 1
+        else:
+            status = "no_metadata" if source == "no_metadata" else "non_compliant"
+            is_compliant = False
+            flagged_count += 1
+
+        # Insert file record
+        if db_type == "postgres":
+            cur.execute("""
+                INSERT INTO submission_files 
+                (session_id, filename, extracted_date, source, status, is_compliant) 
+                VALUES (%s, %s, %s, %s, %s, %s);
+            """, (session_id, safe_name, date_str, source, status, is_compliant))
+        else:
+            cur.execute("""
+                INSERT INTO submission_files 
+                (session_id, filename, extracted_date, source, status, is_compliant) 
+                VALUES (?, ?, ?, ?, ?, ?);
+            """, (session_id, safe_name, date_str, source, status, 1 if is_compliant else 0))
+
+        saved_count += 1
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return jsonify({
+        "session_id": session_id,
+        "total": saved_count,
+        "rep_name": rep_name,
+        "tgif_date": tgif_date
+    })
 
 @app.route("/progress/<session_id>")
 def progress(session_id: str):
-    """Poll endpoint: returns processing progress for a session."""
+    """Return progress for admin batch uploads."""
     with SESSIONS_LOCK:
         data = SESSIONS.get(session_id)
     if not data:
-        return jsonify({"error": "Session not found."}), 404
+        # If not found, maybe it's a rep submission – assume done
+        return jsonify({"progress": 100, "total": 100, "done": True})
     return jsonify({
         "progress": data["progress"],
-        "total":    data["total"],
-        "done":     data["done"],
+        "total": data["total"],
+        "done": data["done"],
     })
-
 
 @app.route("/results/<session_id>")
 def results(session_id: str):
-    """Return full results once processing is complete."""
-    with SESSIONS_LOCK:
-        data = SESSIONS.get(session_id)
-    if not data:
-        return jsonify({"error": "Session not found."}), 404
-    if not data["done"]:
-        return jsonify({"error": "Processing not complete yet."}), 202
-    return jsonify({
-        "results":   data["results"],
-        "tgif_date": data["tgif_date"],
-    })
+    """Return results from database for a given session."""
+    conn, db_type = get_db_connection()
+    cur = conn.cursor()
 
+    if db_type == "postgres":
+        cur.execute("SELECT rep_name, tgif_date FROM submissions WHERE session_id = %s;", (session_id,))
+        sub = cur.fetchone()
+        if not sub:
+            return jsonify({"error": "Session not found."}), 404
+
+        cur.execute("""
+            SELECT filename, extracted_date, source, status, is_compliant 
+            FROM submission_files WHERE session_id = %s;
+        """, (session_id,))
+        files = cur.fetchall()
+
+        results_list = [{
+            "filename": f[0], "date": f[1], "source": f[2],
+            "status": f[3], "compliant": f[4]
+        } for f in files]
+
+        tgif_date, rep_name = sub[1], sub[0]
+    else:
+        cur.execute("SELECT rep_name, tgif_date FROM submissions WHERE session_id = ?;", (session_id,))
+        sub = cur.fetchone()
+        if not sub:
+            return jsonify({"error": "Session not found."}), 404
+
+        cur.execute("""
+            SELECT filename, extracted_date, source, status, is_compliant 
+            FROM submission_files WHERE session_id = ?;
+        """, (session_id,))
+        files = cur.fetchall()
+
+        results_list = [{
+            "filename": f[0], "date": f[1], "source": f[2],
+            "status": f[3], "compliant": bool(f[4])
+        } for f in files]
+
+        rep_name, tgif_date = sub[0], sub[1]
+
+    cur.close()
+    conn.close()
+
+    return jsonify({
+        "results": results_list,
+        "tgif_date": tgif_date,
+        "rep_name": rep_name
+    })
 
 @app.route("/thumb/<session_id>/<path:filename>")
 def thumb(session_id: str, filename: str):
-    """
-    Serve a JPEG thumbnail (≤ 320 px on the longest side) for gallery display.
-    Converts HEIC / RGBA to RGB/JPEG for broad browser compatibility.
-    """
     folder = os.path.join(UPLOAD_BASE, session_id)
     filepath = os.path.join(folder, filename)
     if not os.path.isfile(filepath):
@@ -348,50 +583,121 @@ def thumb(session_id: str, filename: str):
     except Exception:
         return "", 500
 
-
 @app.route("/image/<session_id>/<path:filename>")
 def serve_image(session_id: str, filename: str):
-    """Serve the original uploaded image (for full-size preview)."""
     folder = os.path.join(UPLOAD_BASE, session_id)
     return send_from_directory(folder, filename)
 
-
 @app.route("/download-csv/<session_id>")
 def download_csv(session_id: str):
-    """Generate and download a CSV of all flagged (non-compliant) images."""
-    with SESSIONS_LOCK:
-        data = SESSIONS.get(session_id)
-    if not data or not data["done"]:
-        return jsonify({"error": "Results not ready."}), 404
+    """Download flagged (non‑compliant) files as CSV."""
+    conn, db_type = get_db_connection()
+    cur = conn.cursor()
 
-    flagged = [r for r in data["results"] if not r["compliant"]]
-    tgif_date = data["tgif_date"]
+    if db_type == "postgres":
+        cur.execute("SELECT rep_name, tgif_date FROM submissions WHERE session_id = %s;", (session_id,))
+        sub = cur.fetchone()
+        if not sub:
+            return jsonify({"error": "Not found"}), 404
+        rep_name, tgif_date = sub[0], sub[1]
+
+        cur.execute("""
+            SELECT filename, extracted_date, source, status 
+            FROM submission_files WHERE session_id = %s AND is_compliant = FALSE;
+        """, (session_id,))
+        flagged = cur.fetchall()
+    else:
+        cur.execute("SELECT rep_name, tgif_date FROM submissions WHERE session_id = ?;", (session_id,))
+        sub = cur.fetchone()
+        if not sub:
+            return jsonify({"error": "Not found"}), 404
+        rep_name, tgif_date = sub[0], sub[1]
+
+        cur.execute("""
+            SELECT filename, extracted_date, source, status 
+            FROM submission_files WHERE session_id = ? AND is_compliant = 0;
+        """, (session_id,))
+        flagged = cur.fetchall()
+
+    cur.close()
+    conn.close()
 
     si = StringIO()
     writer = csv.writer(si)
-    writer.writerow(["Filename", "Extracted Date", "Date Source", "Status"])
+    writer.writerow(["Rep Name", "Filename", "Extracted Date", "Date Source", "Status"])
     for row in flagged:
         status_label = {
             "non_compliant": "Non-compliant (wrong date)",
-            "no_metadata":   "No metadata – unable to verify",
-        }.get(row["status"], row["status"])
-        writer.writerow([
-            row["filename"],
-            row["date"] or "N/A",
-            row["source"],
-            status_label,
-        ])
+            "no_metadata": "No metadata – unable to verify",
+        }.get(row[3], row[3])
+        writer.writerow([rep_name, row[0], row[1] or "N/A", row[2], status_label])
 
-    buf = BytesIO(si.getvalue().encode("utf-8-sig"))   # utf-8-sig for Excel compat
+    buf = BytesIO(si.getvalue().encode("utf-8-sig"))
     buf.seek(0)
     return send_file(
         buf,
         mimetype="text/csv",
         as_attachment=True,
-        download_name=f"flagged_images_{tgif_date}.csv",
+        download_name=f"flagged_{tgif_date}_{rep_name}.csv",
     )
 
+@app.route("/api/admin/submissions")
+def get_all_submissions():
+    """Returns a summary of all submissions (both admin and rep)."""
+    conn, db_type = get_db_connection()
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+    if db_type == "postgres":
+        from psycopg2.extras import RealDictCursor as PgRealDictCursor
+
+        cur = cast(Any, conn).cursor(cursor_factory=PgRealDictCursor)
+        cur.execute("""
+            SELECT s.session_id, s.rep_name, s.tgif_date, s.created_at,
+                   COUNT(f.id) as total,
+                   COUNT(CASE WHEN f.is_compliant = TRUE THEN 1 END) as compliant,
+                   COUNT(CASE WHEN f.is_compliant = FALSE THEN 1 END) as flagged
+            FROM submissions s
+            LEFT JOIN submission_files f ON s.session_id = f.session_id
+            GROUP BY s.session_id, s.rep_name, s.tgif_date, s.created_at
+            ORDER BY s.created_at DESC;
+        """)
+        rows = cur.fetchall()
+    else:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT s.session_id, s.rep_name, s.tgif_date, s.created_at,
+                   COUNT(f.id) as total,
+                   SUM(CASE WHEN f.is_compliant = 1 THEN 1 ELSE 0 END) as compliant,
+                   SUM(CASE WHEN f.is_compliant = 0 THEN 1 ELSE 0 END) as flagged
+            FROM submissions s
+            LEFT JOIN submission_files f ON s.session_id = f.session_id
+            GROUP BY s.session_id
+            ORDER BY s.created_at DESC;
+        """)
+        raw = cur.fetchall()
+        rows = []
+        for r in raw:
+            rows.append({
+                "session_id": r[0], "rep_name": r[1], "tgif_date": r[2],
+                "created_at": r[3], "total": r[4], "compliant": r[5] or 0, "flagged": r[6] or 0
+            })
+
+    cur.close()
+    conn.close()
+
+    formatted = []
+    for r in rows:
+        created_str = str(r["created_at"]).split(".")[0]
+        formatted.append({
+            "session_id": r["session_id"],
+            "rep_name": r["rep_name"],
+            "tgif_date": r["tgif_date"],
+            "total": r["total"],
+            "compliant": r["compliant"],
+            "flagged": r["flagged"],
+            "created_at": created_str
+        })
+
+    return jsonify({"submissions": formatted})
+
 if __name__ == "__main__":
     app.run(debug=True, host="127.0.0.1", port=5000)
