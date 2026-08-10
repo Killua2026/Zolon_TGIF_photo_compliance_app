@@ -29,3 +29,9 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Local Database Files
+*.db
+*.sqlite
+*.sqlite3
+local_database.db
