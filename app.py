@@ -171,7 +171,7 @@ def get_b2_client():
             aws_secret_access_key=B2_APPLICATION_KEY,
             config=Config(
                 signature_version="s3v4",
-                s3={"addressing_style": "path"},  # Path-style addressing avoids SSL wildcard issues
+                s3={"addressing_style": "virtual"},  # FIX: Changed 'path' to 'virtual' for eu-central-003 compatibility
                 region_name=region
             )
         )
