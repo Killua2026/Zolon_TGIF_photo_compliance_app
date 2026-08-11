@@ -1,7 +1,6 @@
 """
 Zolon Healthcare Ltd – TGIF Photo Compliance Checker
-Production Flask app with PostgreSQL storage, 7-day automated cleanup,
-and support for Admin Batch Uploads plus Direct Sales Rep Submissions.
+Production Flask app with Neon PostgreSQL & Supabase HTTP REST Storage.
 """
 
 import os
@@ -15,6 +14,7 @@ from datetime import datetime, timedelta
 from io import StringIO, BytesIO
 from typing import Any, cast
 
+import requests
 from flask import (
     Flask, request, jsonify, render_template,
     send_file, send_from_directory, redirect
@@ -23,7 +23,7 @@ from PIL import Image
 from PIL.ExifTags import TAGS
 from werkzeug.utils import secure_filename
 
-# ── Optional HEIC support ────────────────────────────────────────────────────
+# ── Optional HEIC Support ────────────────────────────────────────────────────
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
@@ -39,15 +39,7 @@ try:
 except ImportError:
     POSTGRES_AVAILABLE = False
 
-# ── Optional Boto3 (Backblaze B2 Integration) ────────────────────────────────
-try:
-    import boto3
-    from botocore.config import Config
-    BOTO3_AVAILABLE = True
-except ImportError:
-    BOTO3_AVAILABLE = False
-
-# ── App Setup ────────────────────────────────────────────────────────────────
+# ── App & Environment Config ─────────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
 
@@ -61,19 +53,80 @@ ALLOWED_EXT = {
 }
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-
 CLOUDFLARE_CDN_DOMAIN = os.environ.get("CLOUDFLARE_CDN_DOMAIN")
 
-# Backblaze B2 environment variables
-B2_ENDPOINT_URL = os.environ.get("B2_ENDPOINT_URL")      # e.g., https://s3.us-west-004.backblazeb2.com
-B2_KEY_ID = os.environ.get("B2_KEY_ID")                  # keyID
-B2_APPLICATION_KEY = os.environ.get("B2_APPLICATION_KEY")  # applicationKey
-B2_BUCKET_NAME = os.environ.get("B2_BUCKET_NAME")        # bucket name
+# Supabase Storage environment
+SUPABASE_URL = os.environ.get("SUPABASE_URL")        # e.g., https://xyz.supabase.co
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")        # anon or service_role key
+SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "tgif-photos")
 
 # ── In‑memory progress store (for admin batch uploads only) ────────────────
 # { session_id: { progress, total, done, tgif_date, rep_name, created_at } }
 SESSIONS: dict = {}
 SESSIONS_LOCK = threading.Lock()
+
+
+# ── Supabase Storage REST API Helpers ──────────────────────────────────────
+
+def upload_file_to_supabase(local_path: str, storage_key: str, content_type: str = "image/jpeg") -> bool:
+    """Uploads a photo directly to Supabase Storage via standard HTTP POST."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("[Supabase Warning]: API keys not configured. Skipping cloud upload.")
+        return False
+
+    clean_url = SUPABASE_URL.rstrip("/")
+    url = f"{clean_url}/storage/v1/object/{SUPABASE_BUCKET}/{storage_key}"
+
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "apiKey": SUPABASE_KEY,
+        "Content-Type": content_type,
+        "x-upsert": "true"  # Overwrite file if it already exists
+    }
+
+    try:
+        with open(local_path, "rb") as file_data:
+            response = requests.post(url, headers=headers, data=file_data, timeout=30)
+
+        if response.status_code in (200, 201):
+            print(f"[Supabase Success]: Uploaded {storage_key}")
+            return True
+        else:
+            print(f"[Supabase Upload Error]: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        print(f"[Supabase Upload Exception]: {e}")
+        return False
+
+
+def delete_supabase_session_files(session_id: str):
+    """Deletes all files in a session folder from Supabase Storage."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+
+    clean_url = SUPABASE_URL.rstrip("/")
+    
+    # 1. List objects in session folder
+    list_url = f"{clean_url}/storage/v1/object/list/{SUPABASE_BUCKET}"
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "apiKey": SUPABASE_KEY,
+        "Content-Type": "application/json"
+    }
+
+    try:
+        res = requests.post(list_url, headers=headers, json={"prefix": f"{session_id}/"}, timeout=15)
+        if res.status_code == 200:
+            files = res.json()
+            if files:
+                prefixes = [f"{session_id}/{f['name']}" for f in files]
+                del_url = f"{clean_url}/storage/v1/object/{SUPABASE_BUCKET}"
+                del_res = requests.delete(del_url, headers=headers, json={"prefixes": prefixes}, timeout=15)
+                if del_res.status_code == 200:
+                    print(f"[Supabase Purge]: Deleted {len(prefixes)} files for session {session_id}")
+    except Exception as e:
+        print(f"[Supabase Purge Exception]: {e}")
+
 
 # ── Database Connection & Initialization ─────────────────────────────────────
 
@@ -90,6 +143,7 @@ def get_db_connection():
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         return conn, "sqlite"
+
 
 def init_db():
     """Initializes schema for PostgreSQL or SQLite."""
@@ -146,115 +200,7 @@ def init_db():
 init_db()
 
 
-# ── Backblaze B2 Client Helpers ──────────────────────────────────────────────
-
-def is_b2_configured() -> bool:
-    """Check if all required B2 environment variables are set."""
-    return all([B2_ENDPOINT_URL, B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_NAME]) and BOTO3_AVAILABLE
-
-def get_b2_client():
-    if BOTO3_AVAILABLE and B2_ENDPOINT_URL and B2_KEY_ID and B2_APPLICATION_KEY:
-        # Standardize the endpoint format
-        endpoint = B2_ENDPOINT_URL if B2_ENDPOINT_URL.startswith("http") else f"https://{B2_ENDPOINT_URL}"
-        
-        # FIX: Backblaze requires an explicit region string match. 
-        # Since your endpoint is eu-central-003, your exact region ID is 'eu-central-003'.
-        region = "eu-central-003" 
-
-        return boto3.client(
-            service_name="s3",
-            endpoint_url=endpoint,
-            aws_access_key_id=B2_KEY_ID,
-            aws_secret_access_key=B2_APPLICATION_KEY,
-            config=Config(
-                signature_version="s3v4",
-                s3={"addressing_style": "path"},  # Path style is correct, but ONLY when region is valid!
-                region_name=region
-            )
-        )
-    return None
-
-
-def compress_image_for_storage(file_path: str, max_dim: int = 2048):
-    """Resizes original image if it exceeds 2048px to prevent huge 15MB upload delays."""
-    try:
-        img = Image.open(file_path)
-        if max(img.size) > max_dim:
-            img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-            if img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
-            img.save(file_path, format="JPEG", quality=85)
-    except Exception as e:
-        print(f"[Compression Warning]: {e}")
-
-def upload_file_to_b2(local_path: str, b2_key: str, content_type: str = "image/jpeg") -> bool:
-    """Uploads a file to Backblaze B2 using put_object (prevents socket resets)."""
-    s3 = get_b2_client()
-    if s3 and B2_BUCKET_NAME:
-        try:
-            with open(local_path, "rb") as file_data:
-                body_bytes = file_data.read()
-                
-            s3.put_object(
-                Bucket=B2_BUCKET_NAME,
-                Key=b2_key,
-                Body=body_bytes,
-                ContentType=content_type
-            )
-            print(f"[B2 Upload Success]: Uploaded {b2_key} ({len(body_bytes)} bytes)")
-            return True
-        except Exception as e:
-            print(f"[B2 Upload Error for {b2_key}]: {e}")
-            return False
-    else:
-        print("[B2 Config Error]: Client or Bucket Name not configured properly.")
-    return False
-
-def delete_b2_session_files(session_id: str):
-    s3 = get_b2_client()
-    if s3 and B2_BUCKET_NAME:
-        try:
-            response = s3.list_objects_v2(Bucket=B2_BUCKET_NAME, Prefix=f"{session_id}/")
-            if "Contents" in response:
-                objects = [{"Key": obj["Key"]} for obj in response["Contents"]]
-                s3.delete_objects(Bucket=B2_BUCKET_NAME, Delete={"Objects": objects})
-                print(f"[B2 Purge] Deleted {len(objects)} objects for session {session_id}")
-        except Exception as e:
-            print(f"[B2 Delete Error]: {e}")
-
-def get_b2_presigned_url(b2_key: str) -> str | None:
-    s3 = get_b2_client()
-    if s3 and B2_BUCKET_NAME:
-        try:
-            url = s3.generate_presigned_url(
-                'get_object',
-                Params={'Bucket': B2_BUCKET_NAME, 'Key': b2_key},
-                ExpiresIn=3600  # Valid for 1 hour
-            )
-            return url
-        except Exception as e:
-            print(f"[Presigned URL Error]: {e}")
-    return None
-
-def generate_and_upload_thumb(local_path: str, session_id: str, safe_name: str):
-    """Generates a compressed thumbnail locally and pushes it to Backblaze B2."""
-    try:
-        img = Image.open(local_path)
-        img.thumbnail((320, 320), Image.Resampling.LANCZOS)
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
-
-        thumb_dir = os.path.dirname(local_path)
-        thumb_path = os.path.join(thumb_dir, f"thumb_{safe_name}")
-        img.save(thumb_path, format="JPEG", quality=80)
-
-        # Upload thumbnail to B2
-        upload_file_to_b2(thumb_path, f"{session_id}/thumb_{safe_name}")
-    except Exception as e:
-        print(f"[Thumbnail Generation Error]: {e}")
-
-
-# ── Automated 7-Day Retention Purge Thread ────────────────────────────────────
+# ── Automated 7-Day Retention Purge Thread ──────────────────────────────────
 
 def purge_expired_7day_data():
     """Background daemon running every 4 hours to purge records & images > 7 days old."""
@@ -272,9 +218,9 @@ def purge_expired_7day_data():
                 expired_sids = [r[0] for r in rows]
 
                 for sid in expired_sids:
-                    # Delete from Backblaze B2
-                    delete_b2_session_files(sid)
-                    # Delete physical image folder
+                    # Delete from Supabase Storage
+                    delete_supabase_session_files(sid)
+                    # Delete physical image folder (if any)
                     folder = os.path.join(UPLOAD_BASE, sid)
                     shutil.rmtree(folder, ignore_errors=True)
 
@@ -289,7 +235,7 @@ def purge_expired_7day_data():
                 expired_sids = [r[0] for r in rows]
 
                 for sid in expired_sids:
-                    delete_b2_session_files(sid)
+                    delete_supabase_session_files(sid)
                     folder = os.path.join(UPLOAD_BASE, sid)
                     shutil.rmtree(folder, ignore_errors=True)
 
@@ -308,7 +254,7 @@ def purge_expired_7day_data():
 threading.Thread(target=purge_expired_7day_data, daemon=True).start()
 
 
-# ── In‑memory session cleanup (for progress tracking only) ───────────────────
+# ── In‑memory session cleanup (for progress tracking only) ──────────────────
 def _cleanup_sessions():
     """Remove stale progress entries older than 1 hour."""
     while True:
@@ -330,6 +276,7 @@ threading.Thread(target=_cleanup_sessions, daemon=True).start()
 def allowed_file(filename: str) -> bool:
     return os.path.splitext(filename)[1].lower() in ALLOWED_EXT
 
+
 def unique_filename(folder: str, filename: str) -> str:
     name, ext = os.path.splitext(filename)
     candidate = filename
@@ -338,6 +285,7 @@ def unique_filename(folder: str, filename: str) -> str:
         candidate = f"{name}({counter}){ext}"
         counter += 1
     return candidate
+
 
 def _parse_exif_datestr(raw) -> str | None:
     try:
@@ -351,6 +299,7 @@ def _parse_exif_datestr(raw) -> str | None:
     except Exception:
         pass
     return None
+
 
 def get_image_date(filepath: str, fallback_timestamp_ms: str | None = None) -> tuple[str | None, str]:
     EXIF_DATE_TAGS = {36867: "DateTimeOriginal", 36868: "DateTimeDigitized", 306: "DateTime"}
@@ -398,6 +347,36 @@ def get_image_date(filepath: str, fallback_timestamp_ms: str | None = None) -> t
         pass
 
     return None, "no_metadata"
+
+
+def compress_image_for_storage(file_path: str, max_dim: int = 2048):
+    """Resizes original image if it exceeds 2048px to keep file sizes lightweight (~400KB)."""
+    try:
+        img = Image.open(file_path)
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            img.save(file_path, format="JPEG", quality=85)
+    except Exception as e:
+        print(f"[Compression Warning]: {e}")
+
+
+def generate_and_upload_thumb(local_path: str, session_id: str, safe_name: str):
+    """Generates a compressed thumbnail locally and pushes it to Supabase Storage."""
+    try:
+        img = Image.open(local_path)
+        img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+
+        thumb_dir = os.path.dirname(local_path)
+        thumb_path = os.path.join(thumb_dir, f"thumb_{safe_name}")
+        img.save(thumb_path, format="JPEG", quality=80)
+
+        upload_file_to_supabase(thumb_path, f"{session_id}/thumb_{safe_name}")
+    except Exception as e:
+        print(f"[Thumbnail Error]: {e}")
 
 
 # ── Background processing for Admin Batch Uploads ──────────────────────────
@@ -449,8 +428,8 @@ def process_admin_batch(session_id: str, tgif_date: str):
                 VALUES (?, ?, ?, ?, ?, ?);
             """, (session_id, filename, date_str, source, status, 1 if compliant else 0))
 
-        # Upload original and thumbnail to Backblaze B2
-        upload_file_to_b2(filepath, f"{session_id}/{filename}")
+        # Upload original and thumbnail to Supabase
+        upload_file_to_supabase(filepath, f"{session_id}/{filename}")
         generate_and_upload_thumb(filepath, session_id, filename)
 
         # Update progress
@@ -477,10 +456,12 @@ def index():
     """Admin Dashboard"""
     return render_template("index.html")
 
+
 @app.route("/submit")
 def rep_submit_page():
     """Sales Rep Mobile Portal"""
     return render_template("submit.html")
+
 
 @app.route("/upload", methods=["POST"])
 def admin_upload():
@@ -550,6 +531,7 @@ def admin_upload():
 
     return jsonify({"session_id": session_id, "total_saved": saved})
 
+
 @app.route("/api/submit-rep-photos", methods=["POST"])
 def submit_rep_photos():
     """API Endpoint for direct phone uploads from Sales Reps."""
@@ -597,11 +579,11 @@ def submit_rep_photos():
             status = "no_metadata" if source == "no_metadata" else "non_compliant"
             is_compliant = False
 
-        # 2. Compress local file to ~500KB to make B2 upload lightning fast
+        # 2. Compress local file to ~500KB to make Supabase upload lightning fast
         compress_image_for_storage(file_path)
 
-        # 3. Upload Original & Thumbnail to Backblaze B2
-        upload_file_to_b2(file_path, f"{session_id}/{safe_name}")
+        # 3. Upload Original & Thumbnail to Supabase Storage
+        upload_file_to_supabase(file_path, f"{session_id}/{safe_name}")
         generate_and_upload_thumb(file_path, session_id, safe_name)
 
         # 4. Save Record to Database
@@ -624,7 +606,7 @@ def submit_rep_photos():
     cur.close()
     conn.close()
 
-    # Clean local temporary files after B2 upload completes
+    # Clean local temporary files after Supabase upload completes
     shutil.rmtree(folder, ignore_errors=True)
 
     return jsonify({
@@ -634,21 +616,23 @@ def submit_rep_photos():
         "tgif_date": tgif_date
     })
 
+
 @app.route("/thumb/<session_id>/<path:filename>")
 def thumb(session_id: str, filename: str):
     # Route via Cloudflare CDN if configured (Zero-egress & lightning fast cache)
     if CLOUDFLARE_CDN_DOMAIN:
         return redirect(f"https://{CLOUDFLARE_CDN_DOMAIN}/{session_id}/thumb_{filename}")
 
-    # Fallback to B2 presigned URL redirect
-    b2_url = get_b2_presigned_url(f"{session_id}/thumb_{filename}")
-    if b2_url:
-        return redirect(b2_url)
+    # Otherwise serve from Supabase public bucket
+    if SUPABASE_URL:
+        clean_url = SUPABASE_URL.rstrip("/")
+        return redirect(f"{clean_url}/storage/v1/object/public/{SUPABASE_BUCKET}/{session_id}/thumb_{filename}")
 
-    # Local disk fallback
+    # Local disk fallback (if files weren't deleted)
     folder = os.path.join(UPLOAD_BASE, session_id)
     filepath = os.path.join(folder, f"thumb_{filename}")
     return send_file(filepath) if os.path.isfile(filepath) else ("", 404)
+
 
 @app.route("/image/<session_id>/<path:filename>")
 def serve_image(session_id: str, filename: str):
@@ -656,14 +640,15 @@ def serve_image(session_id: str, filename: str):
     if CLOUDFLARE_CDN_DOMAIN:
         return redirect(f"https://{CLOUDFLARE_CDN_DOMAIN}/{session_id}/{filename}")
 
-    # Fallback to B2 presigned URL redirect
-    b2_url = get_b2_presigned_url(f"{session_id}/{filename}")
-    if b2_url:
-        return redirect(b2_url)
+    # Otherwise serve from Supabase public bucket
+    if SUPABASE_URL:
+        clean_url = SUPABASE_URL.rstrip("/")
+        return redirect(f"{clean_url}/storage/v1/object/public/{SUPABASE_BUCKET}/{session_id}/{filename}")
 
     # Local disk fallback
     folder = os.path.join(UPLOAD_BASE, session_id)
     return send_from_directory(folder, filename)
+
 
 @app.route("/download-csv/<session_id>")
 def download_csv(session_id: str):
@@ -794,6 +779,7 @@ def get_results(session_id: str):
         "results": results,
     })
 
+
 @app.route("/api/admin/submissions")
 def get_all_submissions():
     """Returns a summary of all submissions (both admin and rep)."""
@@ -851,6 +837,7 @@ def get_all_submissions():
         })
 
     return jsonify({"submissions": formatted})
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="127.0.0.1", port=5000)
