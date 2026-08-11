@@ -154,13 +154,13 @@ def get_b2_client():
     if BOTO3_AVAILABLE and B2_ENDPOINT_URL and B2_KEY_ID and B2_APPLICATION_KEY:
         endpoint = B2_ENDPOINT_URL if B2_ENDPOINT_URL.startswith("http") else f"https://{B2_ENDPOINT_URL}"
         
-        # Dynamically extract region (e.g. eu-central-003) from endpoint
+        # Extract region dynamically (e.g. eu-central-003)
         region = "us-east-1"
         try:
             clean_ep = endpoint.replace("https://", "").replace("http://", "").strip("/")
             parts = clean_ep.split(".")
             if len(parts) >= 3 and parts[0] == "s3":
-                region = parts[1]  # e.g., 'eu-central-003'
+                region = parts[1]
         except Exception:
             pass
 
@@ -171,11 +171,8 @@ def get_b2_client():
             aws_secret_access_key=B2_APPLICATION_KEY,
             config=Config(
                 signature_version="s3v4",
-                s3={"addressing_style": "path"},  # Prevents SSL certificate domain mismatch
-                region_name=region,
-                connect_timeout=30,
-                read_timeout=60,
-                retries={"max_attempts": 3, "mode": "standard"}
+                s3={"addressing_style": "path"},  # Path-style addressing avoids SSL wildcard issues
+                region_name=region
             )
         )
     return None
@@ -193,19 +190,27 @@ def compress_image_for_storage(file_path: str, max_dim: int = 2048):
     except Exception as e:
         print(f"[Compression Warning]: {e}")
 
-def upload_file_to_b2(local_path: str, b2_key: str, content_type: str = "image/jpeg"):
+def upload_file_to_b2(local_path: str, b2_key: str, content_type: str = "image/jpeg") -> bool:
+    """Uploads a file to Backblaze B2 using put_object (prevents socket resets)."""
     s3 = get_b2_client()
     if s3 and B2_BUCKET_NAME:
         try:
-            s3.upload_file(
-                Filename=local_path,
+            with open(local_path, "rb") as file_data:
+                body_bytes = file_data.read()
+                
+            s3.put_object(
                 Bucket=B2_BUCKET_NAME,
                 Key=b2_key,
-                ExtraArgs={"ContentType": content_type}
+                Body=body_bytes,
+                ContentType=content_type
             )
+            print(f"[B2 Upload Success]: Uploaded {b2_key} ({len(body_bytes)} bytes)")
             return True
         except Exception as e:
-            print(f"[B2 Upload Error]: {e}")
+            print(f"[B2 Upload Error for {b2_key}]: {e}")
+            return False
+    else:
+        print("[B2 Config Error]: Client or Bucket Name not configured properly.")
     return False
 
 def delete_b2_session_files(session_id: str):
@@ -235,9 +240,7 @@ def get_b2_presigned_url(b2_key: str) -> str | None:
     return None
 
 def generate_and_upload_thumb(local_path: str, session_id: str, safe_name: str):
-    """Generates a thumbnail locally and pushes it to Backblaze B2."""
-    if not is_b2_configured():
-        return  # Skip if B2 not available
+    """Generates a compressed thumbnail locally and pushes it to Backblaze B2."""
     try:
         img = Image.open(local_path)
         img.thumbnail((320, 320), Image.Resampling.LANCZOS)
@@ -248,7 +251,7 @@ def generate_and_upload_thumb(local_path: str, session_id: str, safe_name: str):
         thumb_path = os.path.join(thumb_dir, f"thumb_{safe_name}")
         img.save(thumb_path, format="JPEG", quality=80)
 
-        # Upload thumbnail to Backblaze B2
+        # Upload thumbnail to B2
         upload_file_to_b2(thumb_path, f"{session_id}/thumb_{safe_name}")
     except Exception as e:
         print(f"[Thumbnail Generation Error]: {e}")
