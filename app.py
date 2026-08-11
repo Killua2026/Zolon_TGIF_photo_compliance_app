@@ -154,17 +154,12 @@ def is_b2_configured() -> bool:
 
 def get_b2_client():
     if BOTO3_AVAILABLE and B2_ENDPOINT_URL and B2_KEY_ID and B2_APPLICATION_KEY:
+        # Standardize the endpoint format
         endpoint = B2_ENDPOINT_URL if B2_ENDPOINT_URL.startswith("http") else f"https://{B2_ENDPOINT_URL}"
         
-        # Extract region dynamically (e.g. eu-central-003)
-        region = "us-east-1"
-        try:
-            clean_ep = endpoint.replace("https://", "").replace("http://", "").strip("/")
-            parts = clean_ep.split(".")
-            if len(parts) >= 3 and parts[0] == "s3":
-                region = parts[1]
-        except Exception:
-            pass
+        # FIX: Backblaze requires an explicit region string match. 
+        # Since your endpoint is eu-central-003, your exact region ID is 'eu-central-003'.
+        region = "eu-central-003" 
 
         return boto3.client(
             service_name="s3",
@@ -173,7 +168,7 @@ def get_b2_client():
             aws_secret_access_key=B2_APPLICATION_KEY,
             config=Config(
                 signature_version="s3v4",
-                s3={"addressing_style": "virtual"},  # FIX: Changed 'path' to 'virtual' for eu-central-003 compatibility
+                s3={"addressing_style": "path"},  # Path style is correct, but ONLY when region is valid!
                 region_name=region
             )
         )
