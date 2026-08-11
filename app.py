@@ -726,6 +726,82 @@ def download_csv(session_id: str):
         download_name=f"flagged_{tgif_date}_{rep_name}.csv",
     )
 
+
+@app.route("/results/<session_id>")
+def get_results(session_id: str):
+    """Return a submission's compliance results for the dashboard view."""
+    conn, db_type = get_db_connection()
+    cur = conn.cursor()
+
+    if db_type == "postgres":
+        cur.execute("SELECT rep_name, tgif_date FROM submissions WHERE session_id = %s;", (session_id,))
+        sub = cur.fetchone()
+        if not sub:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "Not found"}), 404
+
+        rep_name, tgif_date = sub[0], sub[1]
+        cur.execute(
+            """
+            SELECT filename, extracted_date, source, status, is_compliant
+            FROM submission_files
+            WHERE session_id = %s
+            ORDER BY id ASC;
+            """,
+            (session_id,),
+        )
+        rows = cur.fetchall()
+        results = [
+            {
+                "filename": row[0],
+                "date": row[1],
+                "source": row[2],
+                "status": row[3],
+                "compliant": bool(row[4]),
+            }
+            for row in rows
+        ]
+    else:
+        cur.execute("SELECT rep_name, tgif_date FROM submissions WHERE session_id = ?;", (session_id,))
+        sub = cur.fetchone()
+        if not sub:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "Not found"}), 404
+
+        rep_name, tgif_date = sub[0], sub[1]
+        cur.execute(
+            """
+            SELECT filename, extracted_date, source, status, is_compliant
+            FROM submission_files
+            WHERE session_id = ?
+            ORDER BY id ASC;
+            """,
+            (session_id,),
+        )
+        rows = cur.fetchall()
+        results = [
+            {
+                "filename": row[0],
+                "date": row[1],
+                "source": row[2],
+                "status": row[3],
+                "compliant": bool(row[4]),
+            }
+            for row in rows
+        ]
+
+    cur.close()
+    conn.close()
+
+    return jsonify({
+        "session_id": session_id,
+        "rep_name": rep_name,
+        "tgif_date": tgif_date,
+        "results": results,
+    })
+
 @app.route("/api/admin/submissions")
 def get_all_submissions():
     """Returns a summary of all submissions (both admin and rep)."""
