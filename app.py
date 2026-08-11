@@ -151,20 +151,47 @@ def is_b2_configured() -> bool:
     return all([B2_ENDPOINT_URL, B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_NAME]) and BOTO3_AVAILABLE
 
 def get_b2_client():
-    if is_b2_configured():
-        endpoint_url = B2_ENDPOINT_URL
-        if not endpoint_url:
-            return None
-        endpoint = endpoint_url if endpoint_url.startswith("http") else f"https://{endpoint_url}"
+    if BOTO3_AVAILABLE and B2_ENDPOINT_URL and B2_KEY_ID and B2_APPLICATION_KEY:
+        endpoint = B2_ENDPOINT_URL if B2_ENDPOINT_URL.startswith("http") else f"https://{B2_ENDPOINT_URL}"
+        
+        # Dynamically extract region (e.g. eu-central-003) from endpoint
+        region = "us-east-1"
+        try:
+            clean_ep = endpoint.replace("https://", "").replace("http://", "").strip("/")
+            parts = clean_ep.split(".")
+            if len(parts) >= 3 and parts[0] == "s3":
+                region = parts[1]  # e.g., 'eu-central-003'
+        except Exception:
+            pass
+
         return boto3.client(
             service_name="s3",
             endpoint_url=endpoint,
             aws_access_key_id=B2_KEY_ID,
             aws_secret_access_key=B2_APPLICATION_KEY,
-            config=Config(signature_version="s3v4"),
-            region_name="us-east-1",  # Standard dummy region for S3 compatibility
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},  # Prevents SSL certificate domain mismatch
+                region_name=region,
+                connect_timeout=30,
+                read_timeout=60,
+                retries={"max_attempts": 3, "mode": "standard"}
+            )
         )
     return None
+
+
+def compress_image_for_storage(file_path: str, max_dim: int = 2048):
+    """Resizes original image if it exceeds 2048px to prevent huge 15MB upload delays."""
+    try:
+        img = Image.open(file_path)
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            img.save(file_path, format="JPEG", quality=85)
+    except Exception as e:
+        print(f"[Compression Warning]: {e}")
 
 def upload_file_to_b2(local_path: str, b2_key: str, content_type: str = "image/jpeg"):
     s3 = get_b2_client()
@@ -537,23 +564,17 @@ def submit_rep_photos():
     folder = os.path.join(UPLOAD_BASE, session_id)
     os.makedirs(folder, exist_ok=True)
 
-    # Insert submission record
     conn, db_type = get_db_connection()
     cur = conn.cursor()
+
     if db_type == "postgres":
-        cur.execute(
-            "INSERT INTO submissions (session_id, rep_name, tgif_date) VALUES (%s, %s, %s);",
-            (session_id, rep_name, tgif_date)
-        )
+        cur.execute("INSERT INTO submissions (session_id, rep_name, tgif_date) VALUES (%s, %s, %s);",
+                    (session_id, rep_name, tgif_date))
     else:
-        cur.execute(
-            "INSERT INTO submissions (session_id, rep_name, tgif_date) VALUES (?, ?, ?);",
-            (session_id, rep_name, tgif_date)
-        )
+        cur.execute("INSERT INTO submissions (session_id, rep_name, tgif_date) VALUES (?, ?, ?);",
+                    (session_id, rep_name, tgif_date))
 
     saved_count = 0
-    compliant_count = 0
-    flagged_count = 0
 
     for f in files:
         if not f or not f.filename:
@@ -566,19 +587,24 @@ def submit_rep_photos():
         file_path = os.path.join(folder, safe_name)
         f.save(file_path)
 
+        # 1. Extract EXIF metadata FIRST (before compressing to preserve raw dates)
         fallback_ms = request.form.get(f"lm_{f.filename}")
         date_str, source = get_image_date(file_path, fallback_ms)
 
         if date_str == tgif_date and source != "no_metadata":
-            status = "compliant"
-            is_compliant = True
-            compliant_count += 1
+            status, is_compliant = "compliant", True
         else:
             status = "no_metadata" if source == "no_metadata" else "non_compliant"
             is_compliant = False
-            flagged_count += 1
 
-        # Insert file record
+        # 2. Compress local file to ~500KB to make B2 upload lightning fast
+        compress_image_for_storage(file_path)
+
+        # 3. Upload Original & Thumbnail to Backblaze B2
+        upload_file_to_b2(file_path, f"{session_id}/{safe_name}")
+        generate_and_upload_thumb(file_path, session_id, safe_name)
+
+        # 4. Save Record to Database
         if db_type == "postgres":
             cur.execute("""
                 INSERT INTO submission_files 
@@ -591,10 +617,6 @@ def submit_rep_photos():
                 (session_id, filename, extracted_date, source, status, is_compliant) 
                 VALUES (?, ?, ?, ?, ?, ?);
             """, (session_id, safe_name, date_str, source, status, 1 if is_compliant else 0))
-
-        # Upload original and thumbnail to Backblaze B2
-        upload_file_to_b2(file_path, f"{session_id}/{safe_name}")
-        generate_and_upload_thumb(file_path, session_id, safe_name)
 
         saved_count += 1
 
@@ -610,72 +632,6 @@ def submit_rep_photos():
         "total": saved_count,
         "rep_name": rep_name,
         "tgif_date": tgif_date
-    })
-
-@app.route("/progress/<session_id>")
-def progress(session_id: str):
-    """Return progress for admin batch uploads."""
-    with SESSIONS_LOCK:
-        data = SESSIONS.get(session_id)
-    if not data:
-        # If not found, maybe it's a rep submission – assume done
-        return jsonify({"progress": 100, "total": 100, "done": True})
-    return jsonify({
-        "progress": data["progress"],
-        "total": data["total"],
-        "done": data["done"],
-    })
-
-@app.route("/results/<session_id>")
-def results(session_id: str):
-    """Return results from database for a given session."""
-    conn, db_type = get_db_connection()
-    cur = conn.cursor()
-
-    if db_type == "postgres":
-        cur.execute("SELECT rep_name, tgif_date FROM submissions WHERE session_id = %s;", (session_id,))
-        sub = cur.fetchone()
-        if not sub:
-            return jsonify({"error": "Session not found."}), 404
-
-        cur.execute("""
-            SELECT filename, extracted_date, source, status, is_compliant 
-            FROM submission_files WHERE session_id = %s;
-        """, (session_id,))
-        files = cur.fetchall()
-
-        results_list = [{
-            "filename": f[0], "date": f[1], "source": f[2],
-            "status": f[3], "compliant": f[4]
-        } for f in files]
-
-        tgif_date, rep_name = sub[1], sub[0]
-    else:
-        cur.execute("SELECT rep_name, tgif_date FROM submissions WHERE session_id = ?;", (session_id,))
-        sub = cur.fetchone()
-        if not sub:
-            return jsonify({"error": "Session not found."}), 404
-
-        cur.execute("""
-            SELECT filename, extracted_date, source, status, is_compliant 
-            FROM submission_files WHERE session_id = ?;
-        """, (session_id,))
-        files = cur.fetchall()
-
-        results_list = [{
-            "filename": f[0], "date": f[1], "source": f[2],
-            "status": f[3], "compliant": bool(f[4])
-        } for f in files]
-
-        rep_name, tgif_date = sub[0], sub[1]
-
-    cur.close()
-    conn.close()
-
-    return jsonify({
-        "results": results_list,
-        "tgif_date": tgif_date,
-        "rep_name": rep_name
     })
 
 @app.route("/thumb/<session_id>/<path:filename>")
