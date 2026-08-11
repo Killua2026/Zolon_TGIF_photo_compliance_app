@@ -62,6 +62,8 @@ ALLOWED_EXT = {
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+CLOUDFLARE_CDN_DOMAIN = os.environ.get("CLOUDFLARE_CDN_DOMAIN")
+
 # Backblaze B2 environment variables
 B2_ENDPOINT_URL = os.environ.get("B2_ENDPOINT_URL")      # e.g., https://s3.us-west-004.backblazeb2.com
 B2_KEY_ID = os.environ.get("B2_KEY_ID")                  # keyID
@@ -639,7 +641,11 @@ def submit_rep_photos():
 
 @app.route("/thumb/<session_id>/<path:filename>")
 def thumb(session_id: str, filename: str):
-    # Try Backblaze B2 presigned URL redirect
+    # Route via Cloudflare CDN if configured (Zero-egress & lightning fast cache)
+    if CLOUDFLARE_CDN_DOMAIN:
+        return redirect(f"https://{CLOUDFLARE_CDN_DOMAIN}/{session_id}/thumb_{filename}")
+
+    # Fallback to B2 presigned URL redirect
     b2_url = get_b2_presigned_url(f"{session_id}/thumb_{filename}")
     if b2_url:
         return redirect(b2_url)
@@ -647,27 +653,15 @@ def thumb(session_id: str, filename: str):
     # Local disk fallback
     folder = os.path.join(UPLOAD_BASE, session_id)
     filepath = os.path.join(folder, f"thumb_{filename}")
-    if not os.path.isfile(filepath):
-        # Try to generate on the fly if original exists (legacy)
-        orig_path = os.path.join(folder, filename)
-        if os.path.isfile(orig_path):
-            try:
-                img = Image.open(orig_path)
-                img.thumbnail((320, 320), Image.Resampling.LANCZOS)
-                if img.mode not in ("RGB", "L"):
-                    img = img.convert("RGB")
-                buf = BytesIO()
-                img.save(buf, format="JPEG", quality=80)
-                buf.seek(0)
-                return send_file(buf, mimetype="image/jpeg")
-            except Exception:
-                pass
-        return "", 404
-    return send_file(filepath)
+    return send_file(filepath) if os.path.isfile(filepath) else ("", 404)
 
 @app.route("/image/<session_id>/<path:filename>")
 def serve_image(session_id: str, filename: str):
-    # Try Backblaze B2 presigned URL redirect
+    # Route via Cloudflare CDN if configured
+    if CLOUDFLARE_CDN_DOMAIN:
+        return redirect(f"https://{CLOUDFLARE_CDN_DOMAIN}/{session_id}/{filename}")
+
+    # Fallback to B2 presigned URL redirect
     b2_url = get_b2_presigned_url(f"{session_id}/{filename}")
     if b2_url:
         return redirect(b2_url)
