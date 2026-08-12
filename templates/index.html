@@ -662,6 +662,14 @@
 </head>
 <body>
 
+<script>
+  window.APP_CONFIG = {
+    supabaseProjectId: "{{ supabase_project_id | e }}",
+    supabaseBucket: "{{ supabase_bucket | e }}",
+    supabasePublicBaseUrl: "{{ supabase_public_base_url | e }}"
+  };
+</script>
+
 <!-- ═══ HEADER ═══════════════════════════════════════════════════════════════ -->
 <header class="header">
   <div class="header-inner">
@@ -885,6 +893,16 @@ const ALLOWED_EXT   = /\.(jpe?g|png|heic|webp|tiff?|bmp|gif)$/i;
 
 /* ── DOM shortcuts ─────────────────────────────────────────────────────── */
 const $ = id => document.getElementById(id);
+const SUPABASE_PUBLIC_BASE_URL = window.APP_CONFIG?.supabasePublicBaseUrl || '';
+
+function encodePathSegment(segment) {
+  return encodeURIComponent(String(segment));
+}
+
+function buildSupabasePublicUrl(...segments) {
+  if (!SUPABASE_PUBLIC_BASE_URL) return '';
+  return `${SUPABASE_PUBLIC_BASE_URL}/${segments.map(encodePathSegment).join('/')}`;
+}
 
 /* ── File helpers ──────────────────────────────────────────────────────── */
 function formatBytes(bytes) {
@@ -1170,7 +1188,7 @@ function renderResults(results, tgifDate) {
 
     card.innerHTML = `
       <img class="gallery-thumb"
-           src="/thumb/${currentSession}/${encodeURIComponent(item.filename)}"
+           src="${buildSupabasePublicUrl(currentSession, `thumb_${item.filename}`)}"
            alt="${escHtml(item.filename)}"
            onerror="this.outerHTML='<div class=&quot;gallery-thumb-placeholder&quot;>🖼</div>'" />
       <div class="gallery-info">
@@ -1184,7 +1202,7 @@ function renderResults(results, tgifDate) {
 
 /* ── Lightbox ──────────────────────────────────────────────────────────── */
 function openLightbox(item) {
-  $('lightbox-img').src = `/image/${currentSession}/${encodeURIComponent(item.filename)}`;
+  $('lightbox-img').src = buildSupabasePublicUrl(currentSession, item.filename);
   const statusText = item.status === 'no_metadata'
     ? 'No metadata – unable to verify'
     : `Non-compliant · Photo date: ${item.date || 'unknown'} (via ${item.source === 'exif' ? 'EXIF' : 'file timestamp'})`;

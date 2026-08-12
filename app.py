@@ -13,6 +13,7 @@ import threading
 from datetime import datetime, timedelta
 from io import StringIO, BytesIO
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import requests
 from flask import (
@@ -59,6 +60,27 @@ CLOUDFLARE_CDN_DOMAIN = os.environ.get("CLOUDFLARE_CDN_DOMAIN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")        # e.g., https://xyz.supabase.co
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")        # anon or service_role key
 SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "tgif-photos")
+
+
+def get_supabase_public_config() -> dict[str, str]:
+    """Return the public Supabase storage base used by the frontend."""
+    project_id = os.environ.get("SUPABASE_PROJECT_ID", "").strip()
+    bucket = os.environ.get("SUPABASE_BUCKET", SUPABASE_BUCKET).strip()
+
+    if not project_id and SUPABASE_URL:
+        hostname = urlparse(SUPABASE_URL).netloc.strip()
+        if hostname.endswith(".supabase.co"):
+            project_id = hostname.removesuffix(".supabase.co")
+
+    public_base_url = ""
+    if project_id and bucket:
+        public_base_url = f"https://{project_id}.supabase.co/storage/v1/object/public/{bucket}"
+
+    return {
+        "supabase_project_id": project_id,
+        "supabase_bucket": bucket,
+        "supabase_public_base_url": public_base_url,
+    }
 
 # ── In‑memory progress store (for admin batch uploads only) ────────────────
 # { session_id: { progress, total, done, tgif_date, rep_name, created_at } }
@@ -454,13 +476,13 @@ def process_admin_batch(session_id: str, tgif_date: str):
 @app.route("/")
 def index():
     """Admin Dashboard"""
-    return render_template("index.html")
+    return render_template("index.html", **get_supabase_public_config())
 
 
 @app.route("/submit")
 def rep_submit_page():
     """Sales Rep Mobile Portal"""
-    return render_template("submit.html")
+    return render_template("submit.html", **get_supabase_public_config())
 
 
 @app.route("/upload", methods=["POST"])
