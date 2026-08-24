@@ -57,6 +57,7 @@ This project uses [uv](https://docs.astral.sh/uv/) for fast Python package manag
 * `templates/index.html`: The frontend UI.
 * `uploads/`: Temporary directory where images are processed (auto-cleaned).
 
-## Author
+## Contributors
 
 **Ikechukwu Obi**
+**Emmanuel Nwachukwu**
