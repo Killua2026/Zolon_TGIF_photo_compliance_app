@@ -59,5 +59,5 @@ This project uses [uv](https://docs.astral.sh/uv/) for fast Python package manag
 
 ## Contributors
 
-**Ikechukwu Obi**
+**Ikechukwu Obi**,
 **Emmanuel Nwachukwu**
