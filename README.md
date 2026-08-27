@@ -117,6 +117,7 @@ requirements.txt          Runtime dependencies
 
 The admin dashboard and date-setting endpoint currently rely on access to the application URL. Authentication and authorization should be added before exposing the deployment publicly.
 
-## Author
+## Contributors
 
-**Ikechukwu Obi**
+**Ikechukwu Obi**,
+**Emmanuel Nwachukwu**
