@@ -178,6 +178,7 @@ def init_db():
                 session_id VARCHAR(64) PRIMARY KEY,
                 rep_name VARCHAR(255) NOT NULL,
                 tgif_date VARCHAR(10) NOT NULL,
+                pharmacy_name VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS submission_files (
@@ -191,15 +192,44 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key VARCHAR(255) PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS pharmacy_name VARCHAR(255);")
+        cur.execute("""
+            INSERT INTO app_settings (key, value)
+            VALUES (%s, %s)
+            ON CONFLICT (key) DO NOTHING;
+        """, ("active_tgif_date", datetime.now().strftime("%Y-%m-%d")))
     else:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
                 session_id TEXT PRIMARY KEY,
                 rep_name TEXT NOT NULL,
                 tgif_date TEXT NOT NULL,
+                pharmacy_name TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute("PRAGMA table_info(submissions);")
+        submission_columns = {row[1] for row in cur.fetchall()}
+        if "pharmacy_name" not in submission_columns:
+            cur.execute("ALTER TABLE submissions ADD COLUMN pharmacy_name TEXT;")
+        cur.execute("""
+            INSERT OR IGNORE INTO app_settings (key, value)
+            VALUES (?, ?);
+        """, ("active_tgif_date", datetime.now().strftime("%Y-%m-%d")))
         cur.execute("""
             CREATE TABLE IF NOT EXISTS submission_files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -220,6 +250,39 @@ def init_db():
 
 # Run DB initialization at startup
 init_db()
+
+
+def get_active_tgif_date() -> str:
+    """Return the date currently used for rep photo compliance checks."""
+    conn, db_type = get_db_connection()
+    cur = conn.cursor()
+    placeholder = "%s" if db_type == "postgres" else "?"
+    cur.execute(f"SELECT value FROM app_settings WHERE key = {placeholder};", ("active_tgif_date",))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row[0] if row else datetime.now().strftime("%Y-%m-%d")
+
+
+def set_active_tgif_date(new_date: str) -> None:
+    """Persist the date currently used for rep photo compliance checks."""
+    conn, db_type = get_db_connection()
+    cur = conn.cursor()
+    if db_type == "postgres":
+        cur.execute("""
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
+        """, ("active_tgif_date", new_date))
+    else:
+        cur.execute("""
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP;
+        """, ("active_tgif_date", new_date))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 
 # ── Automated 7-Day Retention Purge Thread ──────────────────────────────────
@@ -485,6 +548,23 @@ def rep_submit_page():
     return render_template("submit.html", **get_supabase_public_config())
 
 
+@app.route("/api/active-tgif-date")
+def active_tgif_date():
+    return jsonify({"active_date": get_active_tgif_date()})
+
+
+@app.route("/api/set-active-tgif-date", methods=["POST"])
+def update_active_tgif_date():
+    new_date = (request.get_json(silent=True) or {}).get("date", "")
+    try:
+        datetime.strptime(new_date, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
+
+    set_active_tgif_date(new_date)
+    return jsonify({"success": True, "active_date": new_date})
+
+
 @app.route("/upload", methods=["POST"])
 def admin_upload():
     """Admin batch upload endpoint."""
@@ -557,12 +637,13 @@ def admin_upload():
 @app.route("/api/submit-rep-photos", methods=["POST"])
 def submit_rep_photos():
     """API Endpoint for direct phone uploads from Sales Reps."""
-    rep_name = (request.form.get("rep_name") or "Anonymous Rep").strip()
-    tgif_date = (request.form.get("tgif_date") or "").strip()
+    rep_name = (request.form.get("rep_name") or "").strip()
+    pharmacy_name = (request.form.get("pharmacy_name") or "").strip()
+    tgif_date = get_active_tgif_date()
     files = request.files.getlist("images")
 
-    if not tgif_date or not files:
-        return jsonify({"error": "Please specify the TGIF date and select photos."}), 400
+    if not rep_name or not pharmacy_name or not files:
+        return jsonify({"error": "Please provide the rep name, pharmacy name, and select photos."}), 400
 
     session_id = str(uuid.uuid4())
     folder = os.path.join(UPLOAD_BASE, session_id)
@@ -572,11 +653,11 @@ def submit_rep_photos():
     cur = conn.cursor()
 
     if db_type == "postgres":
-        cur.execute("INSERT INTO submissions (session_id, rep_name, tgif_date) VALUES (%s, %s, %s);",
-                    (session_id, rep_name, tgif_date))
+        cur.execute("INSERT INTO submissions (session_id, rep_name, tgif_date, pharmacy_name) VALUES (%s, %s, %s, %s);",
+                (session_id, rep_name, tgif_date, pharmacy_name))
     else:
-        cur.execute("INSERT INTO submissions (session_id, rep_name, tgif_date) VALUES (?, ?, ?);",
-                    (session_id, rep_name, tgif_date))
+        cur.execute("INSERT INTO submissions (session_id, rep_name, tgif_date, pharmacy_name) VALUES (?, ?, ?, ?);",
+                (session_id, rep_name, tgif_date, pharmacy_name))
 
     saved_count = 0
 
@@ -733,14 +814,14 @@ def get_results(session_id: str):
     cur = conn.cursor()
 
     if db_type == "postgres":
-        cur.execute("SELECT rep_name, tgif_date FROM submissions WHERE session_id = %s;", (session_id,))
+        cur.execute("SELECT rep_name, tgif_date, pharmacy_name FROM submissions WHERE session_id = %s;", (session_id,))
         sub = cur.fetchone()
         if not sub:
             cur.close()
             conn.close()
             return jsonify({"error": "Not found"}), 404
 
-        rep_name, tgif_date = sub[0], sub[1]
+        rep_name, tgif_date, pharmacy_name = sub[0], sub[1], sub[2]
         cur.execute(
             """
             SELECT filename, extracted_date, source, status, is_compliant
@@ -762,14 +843,14 @@ def get_results(session_id: str):
             for row in rows
         ]
     else:
-        cur.execute("SELECT rep_name, tgif_date FROM submissions WHERE session_id = ?;", (session_id,))
+        cur.execute("SELECT rep_name, tgif_date, pharmacy_name FROM submissions WHERE session_id = ?;", (session_id,))
         sub = cur.fetchone()
         if not sub:
             cur.close()
             conn.close()
             return jsonify({"error": "Not found"}), 404
 
-        rep_name, tgif_date = sub[0], sub[1]
+        rep_name, tgif_date, pharmacy_name = sub[0], sub[1], sub[2]
         cur.execute(
             """
             SELECT filename, extracted_date, source, status, is_compliant
@@ -797,6 +878,7 @@ def get_results(session_id: str):
     return jsonify({
         "session_id": session_id,
         "rep_name": rep_name,
+        "pharmacy_name": pharmacy_name,
         "tgif_date": tgif_date,
         "results": results,
     })

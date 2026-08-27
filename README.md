@@ -1,61 +1,121 @@
-# Zolon Healthcare - TGIF Photo Compliance Checker
+# Zolon Healthcare TGIF Photo Compliance Checker
 
-A Python Flask web application built for Zolon Healthcare Ltd to automate the compliance checking of sales representative photos taken during "Thank God It's Friday" (TGIF) events.
+A Flask application for checking whether sales representatives' pharmacy visit photos were taken on the active **Thank God It's Friday (TGIF)** event date.
 
 ## Features
 
-* **Drag and Drop Interface:** Modern, responsive frontend to easily upload single files, multiple files, or entire folders.
-* **Metadata Verification:** Extracts EXIF data (including `DateTimeOriginal`) to verify if photos were taken on the selected TGIF event date.
-* **Smart Fallback:** Uses file modification timestamps if EXIF data is stripped (e.g., by WhatsApp).
-* **HEIC Support:** Native support for Apple's HEIC image format (via `pillow-heif`).
-* **Background Processing:** Uploads and metadata extraction run asynchronously with real-time UI polling and progress bars.
-* **Auto-Cleanup:** A background daemon automatically deletes uploaded temporary files after one hour to save server space.
-* **Reporting:** Generates a visual gallery of non-compliant photos and allows exporting the results to a CSV file.
+### Admin dashboard
 
-## Technology Stack
+- Set the current TGIF date from **Set Current TGIF Date**.
+- View live rep submissions with rep name, pharmacy submission counts, and compliance totals.
+- Open a submission report in a modal without leaving the dashboard.
+- Inspect flagged images and download a CSV report.
+- Copy the rep portal link or open the portal directly.
 
-* **Backend:** Python 3, Flask
-* **Image Processing:** Pillow, pillow-heif, Werkzeug
-* **Frontend:** HTML5, CSS3 (Vanilla), JavaScript
-* **Dependency Management:** uv
+### Sales rep portal
 
-## Setup & Installation
+- Displays the active TGIF date as read-only above the form.
+- Collects sales rep name and pharmacy name.
+- Supports separate **Take Photo** and **Choose from Gallery** actions on mobile.
+- Appends photos to a queue instead of replacing earlier selections.
+- Shows thumbnails, filenames, total count, and total size.
+- Prevents duplicate files and allows individual files to be removed.
+- Keeps the submit button disabled until the date is available, both names are filled in, and at least one photo is queued.
 
-This project uses [uv](https://docs.astral.sh/uv/) for fast Python package management.
+### Compliance processing
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/yourusername/tgif-compliance-checker.git
-    cd tgif-compliance-checker
-    ```
+- Reads `DateTimeOriginal`, `DateTimeDigitized`, and standard EXIF dates.
+- Falls back to the device file timestamp when EXIF metadata is unavailable.
+- Marks photos as compliant, non-compliant, or unable to verify.
+- Supports JPG, JPEG, PNG, WebP, HEIC, TIFF, BMP, and GIF files.
+- Compresses images and creates thumbnails before optional Supabase upload.
+- Automatically purges submissions and stored files older than seven days.
 
-2.  **Create and activate a virtual environment using uv:**
-    ```bash
-    uv venv
-    # On Windows:
-    .venv\Scripts\activate
-    # On macOS/Linux:
-    source .venv/bin/activate
-    ```
+## Technology stack
 
-3.  **Install dependencies:**
-    ```bash
-    uv pip install Flask Pillow Werkzeug pillow-heif
-    ```
+- **Backend:** Python 3.12+, Flask
+- **Image processing:** Pillow and pillow-heif
+- **Database:** SQLite locally, PostgreSQL when `DATABASE_URL` is configured
+- **Storage:** Supabase Storage when configured, with local-disk fallback
+- **Frontend:** HTML, CSS, and vanilla JavaScript
+- **Production server:** Gunicorn is included in `requirements.txt`
 
-4.  **Run the application:**
-    ```bash
-    python app.py
-    ```
+## Setup
 
-5.  **Access the web interface:**
-    Open your browser and navigate to `http://127.0.0.1:5000`.
+This project can be installed with [uv](https://docs.astral.sh/uv/) or standard `pip`.
 
-## Project Structure
+1. Create and activate a virtual environment:
 
-* `app.py`: The main Flask backend application.
-* `templates/index.html`: The frontend UI.
-* `uploads/`: Temporary directory where images are processed (auto-cleaned).
+   ```bash
+   uv venv
+   ```
+
+   On Windows:
+
+   ```powershell
+   .venv\Scripts\Activate.ps1
+   ```
+
+2. Install the project dependencies:
+
+   ```bash
+   uv pip install -r requirements.txt
+   ```
+
+3. Start the development server:
+
+   ```bash
+   python app.py
+   ```
+
+4. Open the admin dashboard at <http://127.0.0.1:5000>.
+
+The first startup creates `local_database.db` when PostgreSQL is not configured. Database initialization creates the `app_settings` table, stores the default active date, and adds the `pharmacy_name` column to existing submission databases when needed.
+
+## Configuration
+
+Environment variables are optional for local use:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string. Without it, SQLite is used. |
+| `SUPABASE_URL` | Supabase project URL for image storage and public image links. |
+| `SUPABASE_KEY` | Supabase storage API key. |
+| `SUPABASE_BUCKET` | Storage bucket name; defaults to `tgif-photos`. |
+| `SUPABASE_PROJECT_ID` | Optional project ID used to build public image URLs. |
+| `CLOUDFLARE_CDN_DOMAIN` | Optional CDN domain for image and thumbnail routes. |
+
+When Supabase variables are absent, processing still works locally and cloud upload is skipped.
+
+## Application routes and APIs
+
+| Route | Purpose |
+| --- | --- |
+| `GET /` | Admin dashboard |
+| `GET /submit` | Sales rep portal |
+| `GET /api/active-tgif-date` | Returns the active date as `{ "active_date": "YYYY-MM-DD" }` |
+| `POST /api/set-active-tgif-date` | Sets the active date from `{ "date": "YYYY-MM-DD" }` |
+| `POST /api/submit-rep-photos` | Accepts `rep_name`, `pharmacy_name`, and one or more `images` files |
+| `GET /api/admin/submissions` | Returns submission summaries for the dashboard feed |
+| `GET /results/<session_id>` | Returns compliance results for a submission |
+| `GET /download-csv/<session_id>` | Downloads flagged results as CSV |
+
+The legacy `POST /upload` batch-upload route remains available for backward compatibility, although it is no longer exposed in the admin dashboard.
+
+## Project structure
+
+```text
+app.py                    Flask application, routes, database, and processing
+templates/index.html      Admin dashboard
+templates/submit.html     Sales rep upload portal
+uploads/                  Temporary local image folders
+local_database.db         Local SQLite database, created at runtime
+requirements.txt          Runtime dependencies
+```
+
+## Security note
+
+The admin dashboard and date-setting endpoint currently rely on access to the application URL. Authentication and authorization should be added before exposing the deployment publicly.
 
 ## Author
 

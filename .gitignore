@@ -35,3 +35,6 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 local_database.db
+
+# Copilot Instructions
+copilot-instructions.md

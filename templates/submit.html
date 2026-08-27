@@ -93,7 +93,62 @@
       background: #EBF7F0;
       border-color: #1E7A4D;
     }
-    #photo-input { display: none; }
+    #camera-input, #gallery-input { display: none; }
+    .photo-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+    .photo-action-btn {
+      border: 1px solid #CBD5E1;
+      border-radius: 8px;
+      padding: 0.75rem 0.5rem;
+      background: #F8FAFC;
+      color: #334155;
+      font: 600 0.85rem inherit;
+      cursor: pointer;
+    }
+    .photo-action-btn:hover { background: #EBF7F0; border-color: #1E7A4D; }
+    .file-queue {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+      gap: 0.75rem;
+      max-height: 280px;
+      overflow-y: auto;
+      margin-top: 0.75rem;
+    }
+    .queue-item {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid #E2E8F0;
+      border-radius: 8px;
+      background: #F8FAFC;
+    }
+    .queue-thumb { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+    .queue-name {
+      display: block;
+      padding: 0.35rem;
+      font-size: 0.7rem;
+      color: #334155;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .queue-remove {
+      position: absolute;
+      top: 0.3rem;
+      right: 0.3rem;
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(15,23,42,0.75);
+      color: white;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    .queue-empty { grid-column: 1 / -1; color: #64748B; text-align: center; font-size: 0.82rem; padding: 0.75rem; }
+    .duplicate-notice { min-height: 1.1rem; margin-top: 0.4rem; color: #D97706; font-size: 0.78rem; text-align: center; }
     .btn-submit {
       width: 100%;
       background: #1B6642;
@@ -139,27 +194,32 @@
   <main class="container">
     <div class="card">
       <form id="rep-form">
+        <div class="form-group" style="background:#F8FAFC; padding:0.75rem; border-radius:8px;">
+          <span style="font-size:0.82rem; font-weight:600; color:#334155;">TGIF Event Date: </span>
+          <span id="rep-active-date" style="font-weight:600; color:#0D3B27;">Loading...</span>
+        </div>
+
         <div class="form-group">
-          <label class="label" for="rep-name">Sales Rep Name</label>
+          <label class="label" for="rep-name">Sales Rep Full Name</label>
           <input type="text" id="rep-name" class="input" placeholder="e.g. Chinedu Okeke" required />
         </div>
 
         <div class="form-group">
-          <label class="label" for="tgif-date">TGIF Event Date</label>
-          <input type="date" id="tgif-date" class="input" required />
+          <label class="label" for="pharmacy-name">Pharmacy Name</label>
+          <input type="text" id="pharmacy-name" class="input" placeholder="e.g. Medicare Pharmacy" required />
         </div>
 
         <div class="form-group">
           <label class="label">Pharmacy Visit Photos</label>
-          <div class="file-select-btn" onclick="document.getElementById('photo-input').click()">
-            <span style="font-size: 1.5rem">📷</span>
-            <div>
-              <strong style="display:block;font-size:0.9rem;color:#334155">Tap to Select / Take Photos</strong>
-              <span style="font-size:0.75rem;color:#64748B">Camera or Gallery</span>
-            </div>
+          <div class="photo-actions">
+            <button type="button" class="photo-action-btn" id="take-photo" aria-label="Take photo">📷 Take Photo</button>
+            <button type="button" class="photo-action-btn" id="choose-gallery" aria-label="Choose photos from gallery">🖼️ Choose from Gallery</button>
           </div>
-          <input type="file" id="photo-input" multiple accept="image/*" onchange="updateFileCount()" />
-          <div class="file-count" id="file-count-text">No photos selected</div>
+          <input type="file" id="camera-input" accept="image/*" capture="environment" />
+          <input type="file" id="gallery-input" accept="image/*" multiple />
+          <div class="file-queue" id="file-queue"><div class="queue-empty">No photos selected</div></div>
+          <div class="file-count" id="file-count-text">0 photos selected</div>
+          <div class="duplicate-notice" id="duplicate-notice" aria-live="polite"></div>
         </div>
 
         <button type="submit" id="btn-submit" class="btn-submit">📤 Submit TGIF Photos</button>
@@ -170,23 +230,91 @@
   </main>
 
   <script>
-    document.getElementById('tgif-date').valueAsDate = new Date();
+    const form = document.getElementById('rep-form');
+    const submitButton = document.getElementById('btn-submit');
+    let activeDateAvailable = false;
+    let selectedFiles = [];
 
-    function updateFileCount() {
-      const files = document.getElementById('photo-input').files;
-      const text = document.getElementById('file-count-text');
-      if (!files.length) {
-        text.textContent = "No photos selected";
-      } else {
-        text.textContent = `${files.length} photo(s) selected`;
+    function updateSubmitButton() {
+      submitButton.disabled = !activeDateAvailable
+        || !document.getElementById('rep-name').value.trim()
+        || !document.getElementById('pharmacy-name').value.trim()
+        || !selectedFiles.length;
+    }
+
+    async function loadActiveDate() {
+      try {
+        const response = await fetch('/api/active-tgif-date');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Unable to load active date.');
+        document.getElementById('rep-active-date').textContent = data.active_date;
+        activeDateAvailable = true;
+        updateSubmitButton();
+      } catch (error) {
+        document.getElementById('rep-active-date').textContent = 'Unavailable';
+        submitButton.disabled = true;
       }
     }
 
-    document.getElementById('rep-form').addEventListener('submit', async (e) => {
+    function formatBytes(bytes) {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / 1048576).toFixed(1)} MB`;
+    }
+
+    function addFiles(newFiles) {
+      const existing = new Set(selectedFiles.map(file => `${file.name}|${file.size}`));
+      let duplicateCount = 0;
+      Array.from(newFiles).forEach(file => {
+        const key = `${file.name}|${file.size}`;
+        if (existing.has(key)) {
+          duplicateCount++;
+        } else {
+          selectedFiles.push(file);
+          existing.add(key);
+        }
+      });
+      document.getElementById('duplicate-notice').textContent = duplicateCount
+        ? `${duplicateCount} duplicate photo(s) skipped.` : '';
+      renderFileQueue();
+    }
+
+    function removeFile(index) {
+      selectedFiles.splice(index, 1);
+      renderFileQueue();
+    }
+
+    function renderFileQueue() {
+      const queue = document.getElementById('file-queue');
+      const totalSize = selectedFiles.reduce((total, file) => total + file.size, 0);
+      queue.innerHTML = selectedFiles.length ? selectedFiles.map((file, index) => `
+        <div class="queue-item">
+          <img class="queue-thumb" src="${URL.createObjectURL(file)}" alt="${file.name}">
+          <span class="queue-name" title="${file.name}">${file.name}</span>
+          <button type="button" class="queue-remove" aria-label="Remove ${file.name}" onclick="removeFile(${index})">✕</button>
+        </div>
+      `).join('') : '<div class="queue-empty">No photos selected</div>';
+      document.getElementById('file-count-text').textContent = selectedFiles.length
+        ? `${selectedFiles.length} photo(s) selected (${formatBytes(totalSize)})`
+        : '0 photos selected';
+      updateSubmitButton();
+    }
+
+    document.getElementById('take-photo').addEventListener('click', () => document.getElementById('camera-input').click());
+    document.getElementById('choose-gallery').addEventListener('click', () => document.getElementById('gallery-input').click());
+    ['camera-input', 'gallery-input'].forEach(id => {
+      document.getElementById(id).addEventListener('change', event => {
+        addFiles(event.target.files);
+        event.target.value = '';
+      });
+    });
+
+    form.addEventListener('input', updateSubmitButton);
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const btn = document.getElementById('btn-submit');
       const status = document.getElementById('status-card');
-      const files = document.getElementById('photo-input').files;
+      const files = selectedFiles;
 
       if (!files.length) {
         status.className = "status-card status-error";
@@ -201,7 +329,7 @@
 
       const formData = new FormData();
       formData.append('rep_name', document.getElementById('rep-name').value);
-      formData.append('tgif_date', document.getElementById('tgif-date').value);
+      formData.append('pharmacy_name', document.getElementById('pharmacy-name').value);
 
       for (let i = 0; i < files.length; i++) {
         formData.append('images', files[i]);
@@ -221,9 +349,9 @@
           status.style.display = "block";
           // Neutral success message without revealing compliance results
           status.innerHTML = `<strong>Submission Received!</strong><br>Thank you! Your ${data.total} photo(s) have been submitted successfully.`;
-          document.getElementById('rep-form').reset();
-          document.getElementById('tgif-date').valueAsDate = new Date();
-          updateFileCount();
+          form.reset();
+          selectedFiles = [];
+          renderFileQueue();
         } else {
           throw new Error(data.error || 'Submission failed.');
         }
@@ -232,10 +360,13 @@
         status.style.display = "block";
         status.textContent = "Error: " + err.message;
       } finally {
-        btn.disabled = false;
+        updateSubmitButton();
         btn.textContent = "📤 Submit TGIF Photos";
       }
     });
+
+    updateSubmitButton();
+    loadActiveDate();
   </script>
 </body>
 </html>

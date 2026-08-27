@@ -255,9 +255,6 @@
       justify-content: center;
       flex-wrap: wrap;
     }
-    /* Hidden real file inputs */
-    #input-files, #input-folder { display: none; }
-
     /* ── Buttons ─────────────────────────────────────────────────────── */
     .btn {
       display: inline-flex;
@@ -350,7 +347,6 @@
     }
 
     /* ── Progress section ───────────────────────────────────────────── */
-    #section-progress { display: none; }
     .phase-label {
       font-size: .78rem;
       font-weight: 600;
@@ -468,42 +464,6 @@
     }
     .all-clear p { font-size: .88rem; color: var(--slate-600); }
 
-    /* ── Gallery ─────────────────────────────────────────────────────── */
-    .gallery {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      gap: 1rem;
-    }
-    .gallery-card {
-      background: var(--white);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      border: 2px solid var(--red-600);
-      box-shadow: var(--shadow-sm);
-      transition: box-shadow .18s, transform .18s;
-      animation: fadeIn .3s ease both;
-      cursor: pointer;
-    }
-    .gallery-card:hover {
-      box-shadow: var(--shadow-md);
-      transform: translateY(-2px);
-    }
-    .gallery-thumb {
-      width: 100%;
-      aspect-ratio: 1;
-      object-fit: cover;
-      display: block;
-      background: var(--slate-100);
-    }
-    .gallery-thumb-placeholder {
-      width: 100%;
-      aspect-ratio: 1;
-      background: var(--slate-100);
-      display: grid;
-      place-items: center;
-      font-size: 2.5rem;
-      color: var(--slate-300);
-    }
     .gallery-info {
       padding: .6rem .75rem .65rem;
       border-top: 1px solid var(--slate-100);
@@ -585,6 +545,50 @@
       border-top: 1px solid var(--slate-200);
       font-size: .82rem;
       color: var(--slate-600);
+    }
+
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      background: rgba(15,23,42,.68);
+    }
+    .modal-content {
+      position: relative;
+      width: min(900px, 100%);
+      max-height: 90vh;
+      overflow-y: auto;
+      background: var(--white);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+    }
+    .modal-content #section-results {
+      display: block;
+      margin-bottom: 0;
+      box-shadow: none;
+      border: 0;
+    }
+    .modal-close {
+      position: absolute;
+      top: .75rem;
+      right: .75rem;
+      z-index: 1;
+      width: 34px;
+      height: 34px;
+      border: 0;
+      border-radius: 50%;
+      background: var(--slate-200);
+      color: var(--slate-700);
+      font-size: 1.2rem;
+      cursor: pointer;
+    }
+    .modal-footer {
+      padding: 0 2rem 1.5rem;
+      text-align: center;
     }
 
     /* ── "Start over" footer ────────────────────────────────────────── */
@@ -691,6 +695,27 @@
 <!-- ═══ MAIN PAGE ════════════════════════════════════════════════════════════ -->
 <main class="page">
 
+  <section class="card" id="section-admin-date">
+    <div class="card-header">
+      <div class="step-badge">📅</div>
+      <div>
+        <div class="card-title">Set Current TGIF Date</div>
+        <div class="card-subtitle">This date will be used to validate all sales rep photo submissions.</div>
+      </div>
+    </div>
+    <div class="date-row">
+      <div class="field-group">
+        <label class="field-label" for="admin-tgif-date">Active TGIF Date</label>
+        <input type="date" id="admin-tgif-date" class="date-input" />
+      </div>
+      <button class="btn btn-primary" id="btn-save-date">Save Date</button>
+      <span id="admin-date-status" style="font-size:0.82rem; color:var(--green-700); margin-left:0.5rem;"></span>
+    </div>
+    <div style="margin-top:0.5rem; font-size:0.9rem; color:var(--slate-500);">
+      Current active date: <strong id="display-active-date">—</strong>
+    </div>
+  </section>
+
   <!-- ── LIVE REP SUBMISSIONS FEED ────────────────────────────────────── -->
   <section class="card" id="section-rep-feed">
     <div class="card-header">
@@ -709,121 +734,15 @@
     </div>
   </section>
 
-  <!-- ── STEP 1: Select Event Date ────────────────────────────────────── -->
-  <section id="section-setup" class="card">
-    <div class="card-header">
-      <div class="step-badge">1</div>
-      <div>
-        <div class="card-title">Select TGIF Event Date</div>
-        <div class="card-subtitle">Photos taken on this date will be marked compliant</div>
-      </div>
-    </div>
-    <div class="date-row">
-      <div class="field-group">
-        <label class="field-label" for="tgif-date">Event Date</label>
-        <input type="date" id="tgif-date" class="date-input" />
-      </div>
-      <span class="date-hint">Select the Friday on which the TGIF event took place.</span>
-    </div>
-  </section>
-
-  <!-- ── STEP 2: Upload Photos ────────────────────────────────────────── -->
-  <section id="section-upload" class="card">
-    <div class="card-header">
-      <div class="step-badge">2</div>
-      <div>
-        <div class="card-title">Upload WhatsApp Photos</div>
-        <div class="card-subtitle">Drag &amp; drop files or a folder, or browse. Accepted: JPG, PNG, HEIC, WebP, TIFF, BMP</div>
-      </div>
-    </div>
-
-    <!-- Drop zone -->
-    <div class="upload-zone" id="drop-zone"
-         ondragover="handleDragOver(event)"
-         ondragleave="handleDragLeave(event)"
-         ondrop="handleDrop(event)"
-         onclick="document.getElementById('input-files').click()">
-      <div class="upload-icon">📤</div>
-      <div class="upload-headline">Drop photos here</div>
-      <div class="upload-sub">Or use the buttons below to browse files or a whole folder</div>
-      <div class="upload-actions" onclick="event.stopPropagation()">
-        <button class="btn btn-outline" onclick="document.getElementById('input-files').click()">
-          🖼️ Browse Files
-        </button>
-        <button class="btn btn-outline" onclick="document.getElementById('input-folder').click()">
-          📁 Browse Folder
-        </button>
-      </div>
-    </div>
-
-    <!-- Hidden inputs -->
-    <input type="file" id="input-files"  multiple
-           accept=".jpg,.jpeg,.png,.heic,.webp,.tiff,.tif,.bmp,.gif"
-           onchange="handleFileInput(this.files)" />
-    <input type="file" id="input-folder" multiple webkitdirectory
-           accept=".jpg,.jpeg,.png,.heic,.webp,.tiff,.tif,.bmp,.gif"
-           onchange="handleFileInput(this.files)" />
-
-    <!-- File queue -->
-    <div id="file-queue-wrap" class="file-queue-wrap" style="display:none">
-      <div class="file-queue-header">
-        <span class="file-queue-count" id="file-queue-count">0 files selected</span>
-        <button class="btn btn-outline" style="font-size:.78rem;padding:.3rem .7rem"
-                onclick="clearFiles()">Clear all</button>
-      </div>
-      <div class="file-list" id="file-list"></div>
-    </div>
-
-    <!-- Submit + error -->
-    <div class="submit-row">
-      <button class="btn btn-primary btn-upload" id="btn-upload"
-              onclick="startUpload()" disabled>
-        ✅ Check Compliance
-      </button>
-      <span class="error-msg" id="error-msg"></span>
-    </div>
-  </section>
-
-  <!-- ── PROGRESS ─────────────────────────────────────────────────────── -->
-  <section id="section-progress" class="card">
-    <div class="card-header">
-      <div>
-        <div class="card-title" id="progress-title">Uploading Photos…</div>
-        <div class="card-subtitle" id="progress-subtitle">Please wait while files are transferred.</div>
-      </div>
-    </div>
-
-    <!-- Phase 1: Upload -->
-    <div class="progress-block" id="phase-upload">
-      <div class="phase-label">📡 Transfer</div>
-      <div class="progress-track"><div class="progress-fill" id="upload-fill"></div></div>
-      <div class="progress-meta">
-        <span id="upload-pct">0%</span>
-        <span id="upload-eta">Calculating…</span>
-      </div>
-    </div>
-
-    <!-- Phase 2: Processing -->
-    <div class="progress-block" id="phase-process" style="display:none">
-      <div class="phase-label">🔍 Metadata Analysis</div>
-      <div class="progress-track"><div class="progress-fill" id="process-fill"></div></div>
-      <div class="progress-meta">
-        <span id="process-pct">0%</span>
-        <span id="process-eta">Calculating…</span>
-      </div>
-    </div>
-
-    <div class="progress-status-text" id="progress-status">
-      <span class="spinner"></span> Starting…
-    </div>
-  </section>
-
-  <!-- ── RESULTS ──────────────────────────────────────────────────────── -->
+  <!-- ── RESULTS MODAL ─────────────────────────────────────────────────── -->
+  <div id="results-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="results-modal-title" onclick="closeResultsModal(event)">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <button class="modal-close" type="button" aria-label="Close submission report" onclick="closeResultsModal()">✕</button>
   <section id="section-results" class="card">
     <div class="card-header">
       <div class="step-badge">✓</div>
       <div>
-        <div class="card-title">Compliance Report</div>
+        <div class="card-title" id="results-modal-title">Compliance Report</div>
         <div class="card-subtitle" id="results-date-line"></div>
       </div>
     </div>
@@ -864,11 +783,12 @@
     <!-- Flagged gallery -->
     <div class="gallery" id="gallery"></div>
 
-    <!-- Reset -->
-    <div class="reset-row">
-      <button class="btn btn-outline" onclick="resetApp()">↩ Check Another Batch</button>
-    </div>
   </section>
+      <div class="modal-footer">
+        <button class="btn btn-outline" type="button" onclick="closeResultsModal()">↩ Check Another Batch</button>
+      </div>
+    </div>
+  </div>
 
 </main><!-- /.page -->
 
@@ -884,10 +804,7 @@
 <!-- ═══ SCRIPTS ══════════════════════════════════════════════════════════════ -->
 <script>
 /* ── State ────────────────────────────────────────────────────────────────── */
-let selectedFiles   = [];       // Array<File>
 let currentSession  = null;     // session_id string
-let pollingTimer    = null;
-let procStartTime   = null;
 
 const ALLOWED_EXT   = /\.(jpe?g|png|heic|webp|tiff?|bmp|gif)$/i;
 
@@ -904,228 +821,6 @@ function buildSupabasePublicUrl(...segments) {
   return `${SUPABASE_PUBLIC_BASE_URL}/${segments.map(encodePathSegment).join('/')}`;
 }
 
-/* ── File helpers ──────────────────────────────────────────────────────── */
-function formatBytes(bytes) {
-  if (bytes < 1024)       return bytes + ' B';
-  if (bytes < 1048576)    return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / 1048576).toFixed(1) + ' MB';
-}
-
-function formatTime(secs) {
-  if (!isFinite(secs) || secs <= 0) return 'almost done…';
-  if (secs < 60)  return Math.ceil(secs) + 's remaining';
-  const m = Math.floor(secs / 60), s = Math.ceil(secs % 60);
-  return `${m}m ${s}s remaining`;
-}
-
-function isAllowed(name) { return ALLOWED_EXT.test(name); }
-
-/* ── Drag and drop ─────────────────────────────────────────────────────── */
-function handleDragOver(e) {
-  e.preventDefault();
-  $('drop-zone').classList.add('drag-over');
-}
-function handleDragLeave(e) {
-  if (!$('drop-zone').contains(e.relatedTarget))
-    $('drop-zone').classList.remove('drag-over');
-}
-async function handleDrop(e) {
-  e.preventDefault();
-  $('drop-zone').classList.remove('drag-over');
-
-  const items = Array.from(e.dataTransfer.items || []);
-  const newFiles = [];
-
-  async function processEntry(entry) {
-    if (entry.isFile) {
-      const file = await new Promise((res, rej) => entry.file(res, rej));
-      if (isAllowed(file.name)) newFiles.push(file);
-    } else if (entry.isDirectory) {
-      const reader = entry.createReader();
-      // readEntries may need multiple calls for >100 items
-      let batch;
-      do {
-        batch = await new Promise((res, rej) => reader.readEntries(res, rej));
-        for (const sub of batch) await processEntry(sub);
-      } while (batch.length > 0);
-    }
-  }
-
-  if (items.length && items[0].webkitGetAsEntry) {
-    for (const item of items) {
-      const entry = item.webkitGetAsEntry();
-      if (entry) await processEntry(entry);
-    }
-  } else {
-    // Fallback: plain files from dataTransfer.files
-    Array.from(e.dataTransfer.files || []).forEach(f => {
-      if (isAllowed(f.name)) newFiles.push(f);
-    });
-  }
-
-  addFiles(newFiles);
-}
-
-/* ── File input ────────────────────────────────────────────────────────── */
-function handleFileInput(fileList) {
-  const newFiles = Array.from(fileList).filter(f => isAllowed(f.name));
-  addFiles(newFiles);
-}
-
-/* ── Add / clear files ─────────────────────────────────────────────────── */
-function addFiles(newFiles) {
-  const existing = new Set(selectedFiles.map(f => f.name + '|' + f.size));
-  for (const f of newFiles) {
-    const key = f.name + '|' + f.size;
-    if (!existing.has(key)) { selectedFiles.push(f); existing.add(key); }
-  }
-  renderFileList();
-}
-
-function clearFiles() {
-  selectedFiles = [];
-  $('input-files').value  = '';
-  $('input-folder').value = '';
-  renderFileList();
-}
-
-function renderFileList() {
-  const wrap  = $('file-queue-wrap');
-  const list  = $('file-list');
-  const count = $('file-queue-count');
-  const btn   = $('btn-upload');
-
-  if (!selectedFiles.length) {
-    wrap.style.display = 'none';
-    btn.disabled = true;
-    return;
-  }
-
-  const total = selectedFiles.reduce((a, f) => a + f.size, 0);
-  count.textContent = `${selectedFiles.length} file${selectedFiles.length !== 1 ? 's' : ''} selected (${formatBytes(total)})`;
-
-  list.innerHTML = selectedFiles.slice(0, 200).map(f =>
-    `<div class="file-item">
-      <span class="file-item-icon">🖼</span>
-      <span class="file-item-name">${escHtml(f.name)}</span>
-      <span class="file-item-size">${formatBytes(f.size)}</span>
-    </div>`
-  ).join('') +
-  (selectedFiles.length > 200
-    ? `<div class="file-item" style="color:var(--slate-400);justify-content:center">…and ${selectedFiles.length - 200} more</div>`
-    : '');
-
-  wrap.style.display = 'block';
-  btn.disabled = false;
-}
-
-/* ── Upload ────────────────────────────────────────────────────────────── */
-async function startUpload() {
-  const tgif = $('tgif-date').value;
-  if (!tgif) {
-    showError('Please select the TGIF event date first.');
-    return;
-  }
-  if (!selectedFiles.length) {
-    showError('Please select at least one image file.');
-    return;
-  }
-  showError('');
-
-  const formData = new FormData();
-  formData.append('tgif_date', tgif);
-  for (const f of selectedFiles) formData.append('images', f);
-
-  showSection('progress');
-  $('progress-title').textContent    = 'Uploading Photos…';
-  $('progress-subtitle').textContent = `Transferring ${selectedFiles.length} file(s) to server.`;
-  $('phase-upload').style.display    = 'block';
-  $('phase-process').style.display   = 'none';
-  setBar('upload', 0);
-
-  const xhr        = new XMLHttpRequest();
-  const xhrStart   = Date.now();
-
-  xhr.upload.addEventListener('progress', e => {
-    if (!e.lengthComputable) return;
-    const pct     = (e.loaded / e.total) * 100;
-    const elapsed = (Date.now() - xhrStart) / 1000;
-    const rate    = e.loaded / Math.max(elapsed, 0.01);
-    const remain  = (e.total - e.loaded) / rate;
-    setBar('upload', pct);
-    $('upload-pct').textContent = Math.round(pct) + '%';
-    $('upload-eta').textContent = formatTime(remain);
-    $('progress-status').innerHTML = `<span class="spinner"></span> Uploading… ${Math.round(pct)}%`;
-  });
-
-  xhr.addEventListener('load', () => {
-    if (xhr.status !== 200) {
-      let msg = 'Upload failed.';
-      try { msg = JSON.parse(xhr.responseText).error || msg; } catch(_) {}
-      $('progress-status').innerHTML = '❌ ' + escHtml(msg);
-      return;
-    }
-    let data;
-    try { data = JSON.parse(xhr.responseText); } catch(_) {
-      $('progress-status').innerHTML = '❌ Server error.'; return;
-    }
-    currentSession = data.session_id;
-    setBar('upload', 100);
-    $('upload-pct').textContent = '100%';
-    $('upload-eta').textContent = 'Done';
-
-    // Transition to processing phase
-    $('progress-title').textContent    = 'Analysing Metadata…';
-    $('progress-subtitle').textContent = `Extracting EXIF data from ${data.total_saved} image(s).`;
-    $('phase-process').style.display   = 'block';
-    setBar('process', 0);
-    procStartTime = Date.now();
-    startPolling();
-  });
-
-  xhr.addEventListener('error', () => {
-    $('progress-status').innerHTML = '❌ Network error during upload.';
-  });
-
-  xhr.open('POST', '/upload');
-  xhr.send(formData);
-}
-
-/* ── Polling ───────────────────────────────────────────────────────────── */
-function startPolling() {
-  if (pollingTimer) clearInterval(pollingTimer);
-  pollingTimer = setInterval(pollProgress, 500);
-}
-
-async function pollProgress() {
-  let data;
-  try {
-    const resp = await fetch(`/progress/${currentSession}`);
-    if (!resp.ok) return;
-    data = await resp.json();
-  } catch(_) { return; }
-
-  const { progress, total, done } = data;
-  const pct = total > 0 ? (progress / total) * 100 : 0;
-
-  // ETA
-  const elapsed = (Date.now() - procStartTime) / 1000;
-  const rate    = progress / Math.max(elapsed, 0.01);
-  const remain  = rate > 0 ? (total - progress) / rate : Infinity;
-
-  setBar('process', pct);
-  $('process-pct').textContent = `${Math.round(pct)}%  (${progress} / ${total})`;
-  $('process-eta').textContent = formatTime(remain);
-  $('progress-status').innerHTML =
-    `<span class="spinner"></span> Checking image ${progress} of ${total}…`;
-
-  if (done) {
-    clearInterval(pollingTimer);
-    $('progress-status').innerHTML = '✅ Analysis complete. Loading results…';
-    await loadResults();
-  }
-}
-
 async function loadResults() {
   let data;
   try {
@@ -1133,11 +828,11 @@ async function loadResults() {
     if (!resp.ok) throw new Error();
     data = await resp.json();
   } catch(_) {
-    $('progress-status').innerHTML = '❌ Failed to retrieve results.';
+    alert('Failed to retrieve results.');
     return;
   }
   renderResults(data.results, data.tgif_date);
-  showSection('results');
+  $('results-modal').style.display = 'flex';
 }
 
 /* ── Results rendering ─────────────────────────────────────────────────── */
@@ -1214,6 +909,7 @@ function closeLightbox(e) {
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') $('lightbox').classList.remove('open');
+  if (e.key === 'Escape') closeResultsModal();
 });
 
 /* ── CSV download ──────────────────────────────────────────────────────── */
@@ -1221,48 +917,9 @@ function downloadCSV() {
   if (currentSession) window.location = `/download-csv/${currentSession}`;
 }
 
-/* ── Reset ─────────────────────────────────────────────────────────────── */
-function resetApp() {
-  selectedFiles  = [];
-  currentSession = null;
-  if (pollingTimer) clearInterval(pollingTimer);
-
-  $('input-files').value  = '';
-  $('input-folder').value = '';
-  renderFileList();
-  showError('');
-
-  showSection('setup');
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-
-/* ── UI utilities ──────────────────────────────────────────────────────── */
-function showSection(name) {
-  // Hide all sections first, then show only what's needed.
-  // Must use 'block' (not '') to override the CSS display:none rules on
-  // #section-progress and #section-results.
-  ['setup', 'upload', 'progress', 'results'].forEach(s => {
-    $(`section-${s}`).style.display = 'none';
-  });
-
-  if (name === 'setup' || name === 'upload') {
-    $('section-setup').style.display  = 'block';
-    $('section-upload').style.display = 'block';
-  } else if (name === 'progress') {
-    $('section-progress').style.display = 'block';
-  } else if (name === 'results') {
-    $('section-results').style.display = 'block';
-  }
-}
-
-function setBar(phase, pct) {
-  $(`${phase}-fill`).style.width = Math.min(pct, 100) + '%';
-}
-
-function showError(msg) {
-  const el = $('error-msg');
-  el.textContent   = msg;
-  el.style.display = msg ? 'inline-block' : 'none';
+function closeResultsModal(event) {
+  if (event && event.target !== $('results-modal')) return;
+  $('results-modal').style.display = 'none';
 }
 
 function escHtml(s) {
@@ -1281,14 +938,40 @@ function copyRepLink() {
   });
 }
 
-/* ── Init: set default date to today ──────────────────────────────────── */
-(function init() {
-  const today = new Date();
-  const yyyy  = today.getFullYear();
-  const mm    = String(today.getMonth() + 1).padStart(2, '0');
-  const dd    = String(today.getDate()).padStart(2, '0');
-  $('tgif-date').value = `${yyyy}-${mm}-${dd}`;
-})();
+async function loadActiveDate() {
+  try {
+    const response = await fetch('/api/active-tgif-date');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to load date.');
+    $('admin-tgif-date').value = data.active_date;
+    $('display-active-date').textContent = data.active_date;
+  } catch (_) {
+    $('admin-date-status').textContent = 'Unable to load active date.';
+  }
+}
+
+async function saveActiveDate() {
+  const date = $('admin-tgif-date').value;
+  const status = $('admin-date-status');
+  if (!date) {
+    status.textContent = 'Select a date first.';
+    return;
+  }
+  try {
+    const response = await fetch('/api/set-active-tgif-date', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({date})
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to save date.');
+    $('display-active-date').textContent = data.active_date;
+    status.textContent = 'Date updated!';
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
 
 async function loadRepSubmissions() {
   const container = document.getElementById('rep-feed-list');
@@ -1331,7 +1014,11 @@ async function viewRepSession(sessionId) {
 }
 
 // Automatically load feed on page launch
-document.addEventListener('DOMContentLoaded', loadRepSubmissions);
+document.getElementById('btn-save-date').addEventListener('click', saveActiveDate);
+document.addEventListener('DOMContentLoaded', () => {
+  loadActiveDate();
+  loadRepSubmissions();
+});
 </script>
 </body>
 </html>
