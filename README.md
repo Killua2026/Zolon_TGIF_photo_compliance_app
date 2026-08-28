@@ -91,12 +91,14 @@ When Supabase variables are absent, processing still works locally and cloud upl
 
 | Route | Purpose |
 | --- | --- |
-| `GET /` | Admin dashboard |
+| `GET /` | Redirects to the admin dashboard |
+| `GET /admin` | Protected admin dashboard |
+| `GET /admin/login` | Admin login page |
 | `GET /submit` | Sales rep portal |
 | `GET /api/active-tgif-date` | Returns the active date as `{ "active_date": "YYYY-MM-DD" }` |
-| `POST /api/set-active-tgif-date` | Sets the active date from `{ "date": "YYYY-MM-DD" }` |
+| `POST /api/set-active-tgif-date` | Admin-only endpoint to set the active date |
 | `POST /api/submit-rep-photos` | Accepts `rep_name`, `pharmacy_name`, and one or more `images` files |
-| `GET /api/admin/submissions` | Returns submission summaries for the dashboard feed |
+| `GET /api/admin/submissions` | Protected admin summary feed |
 | `GET /results/<session_id>` | Returns compliance results for a submission |
 | `GET /download-csv/<session_id>` | Downloads flagged results as CSV |
 
@@ -106,12 +108,19 @@ The legacy `POST /upload` batch-upload route remains available for backward comp
 
 ```text
 app.py                    Flask application, routes, database, and processing
-templates/index.html      Admin dashboard
+templates/index.html      Protected admin dashboard
+templates/admin_login.html Login page for the admin area
 templates/submit.html     Sales rep upload portal
 uploads/                  Temporary local image folders
 local_database.db         Local SQLite database, created at runtime
 requirements.txt          Runtime dependencies
 ```
+
+## Admin Access
+
+The admin dashboard is available at `/admin`. Access is protected by a password.
+Set the `ADMIN_PASSWORD` environment variable to secure your instance.
+The default password (if not set) is a random string – you must set it in production.
 
 ## Security note
 

@@ -11,14 +11,21 @@ import shutil
 import sqlite3
 import threading
 from datetime import datetime, timedelta
+from functools import wraps
 from io import StringIO, BytesIO
 from typing import Any, cast
 from urllib.parse import urlparse
 
+## ── Environment & Dependency Imports ─────────────────────────────────────────
+from dotenv import load_dotenv
+
+# This reads the .env file and injects its values into the environment
+load_dotenv()
+
 import requests
 from flask import (
     Flask, request, jsonify, render_template,
-    send_file, send_from_directory, redirect
+    send_file, send_from_directory, redirect, session, url_for
 )
 from PIL import Image
 from PIL.ExifTags import TAGS
@@ -55,11 +62,22 @@ ALLOWED_EXT = {
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 CLOUDFLARE_CDN_DOMAIN = os.environ.get("CLOUDFLARE_CDN_DOMAIN")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "CHANGE_ME_STRONG_PASSWORD")
 
 # Supabase Storage environment
 SUPABASE_URL = os.environ.get("SUPABASE_URL")        # e.g., https://xyz.supabase.co
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")        # anon or service_role key
 SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "tgif-photos")
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get("admin"):
+            return redirect(url_for("admin_login"))
+        return f(*args, **kwargs)
+
+    return decorated_function
 
 
 def get_supabase_public_config() -> dict[str, str]:
@@ -537,9 +555,37 @@ def process_admin_batch(session_id: str, tgif_date: str):
 # ── Flask Web Routes ─────────────────────────────────────────────────────────
 
 @app.route("/")
-def index():
+def index_redirect():
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.route("/admin")
+@admin_required
+def admin_dashboard():
     """Admin Dashboard"""
     return render_template("index.html", **get_supabase_public_config())
+
+
+@app.route("/admin/login", methods=["GET"])
+def admin_login():
+    if session.get("admin"):
+        return redirect(url_for("admin_dashboard"))
+    return render_template("admin_login.html")
+
+
+@app.route("/admin/login", methods=["POST"])
+def admin_login_post():
+    password = request.form.get("password", "").strip()
+    if password == ADMIN_PASSWORD:
+        session["admin"] = True
+        return redirect(url_for("admin_dashboard"))
+    return render_template("admin_login.html", error="Invalid password. Please try again.")
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.pop("admin", None)
+    return redirect(url_for("admin_login"))
 
 
 @app.route("/submit")
@@ -554,6 +600,7 @@ def active_tgif_date():
 
 
 @app.route("/api/set-active-tgif-date", methods=["POST"])
+@admin_required
 def update_active_tgif_date():
     new_date = (request.get_json(silent=True) or {}).get("date", "")
     try:
@@ -566,6 +613,7 @@ def update_active_tgif_date():
 
 
 @app.route("/upload", methods=["POST"])
+@admin_required
 def admin_upload():
     """Admin batch upload endpoint."""
     tgif_date = (request.form.get("tgif_date") or "").strip()
@@ -885,6 +933,7 @@ def get_results(session_id: str):
 
 
 @app.route("/api/admin/submissions")
+@admin_required
 def get_all_submissions():
     """Returns a summary of all submissions (both admin and rep)."""
     conn, db_type = get_db_connection()

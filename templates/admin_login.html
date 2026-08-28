@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Login – Zolon TGIF</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green-900: #0D3B27;
+      --green-800: #155235;
+      --green-700: #1B6642;
+      --green-600: #1E7A4D;
+      --green-100: #D6EFE0;
+      --green-50: #EBF7F0;
+      --red-600: #C0392B;
+      --red-50: #FEF4F3;
+      --slate-900: #0F172A;
+      --slate-700: #334155;
+      --slate-500: #64748B;
+      --slate-300: #CBD5E1;
+      --slate-200: #E2E8F0;
+      --slate-100: #F1F5F9;
+      --white: #FFFFFF;
+      --font-serif: 'Libre Baskerville', Georgia, serif;
+      --font-sans: 'DM Sans', system-ui, sans-serif;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--slate-100);
+      color: var(--slate-900);
+      min-height: 100vh;
+      background-image:
+        linear-gradient(var(--slate-200) 1px, transparent 1px),
+        linear-gradient(90deg, var(--slate-200) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+
+    .header {
+      background: var(--green-900);
+      color: var(--white);
+      padding: 0 2rem;
+      box-shadow: 0 2px 12px rgba(0,0,0,.25);
+    }
+
+    .header-inner {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      height: 68px;
+    }
+
+    .logo-mark {
+      width: fit-content;
+      min-height: 0;
+      padding: .22rem .3rem;
+      background: rgba(255,255,255,.98);
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.18);
+    }
+
+    .logo-image {
+      display: block;
+      width: auto;
+      max-width: 168px;
+      max-height: 30px;
+      object-fit: contain;
+    }
+
+    .logo-text { line-height: 1.25; }
+
+    .logo-company {
+      font-family: var(--font-serif);
+      font-size: .8rem;
+      font-weight: 400;
+      color: rgba(255,255,255,.55);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .logo-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--white);
+      letter-spacing: -.01em;
+    }
+
+    .page {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2.5rem 2rem 4rem;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 70vh;
+    }
+
+    .card {
+      background: var(--white);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm);
+      border: 1px solid var(--slate-200);
+      padding: 2rem;
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .card-header {
+      text-align: center;
+      margin-bottom: 1.5rem;
+    }
+
+    .lock-icon {
+      font-size: 3rem;
+      margin-bottom: .5rem;
+    }
+
+    .card-title {
+      font-family: var(--font-serif);
+      font-size: 1.2rem;
+      font-weight: 700;
+      color: var(--slate-900);
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: .4rem;
+      margin-bottom: 1rem;
+    }
+
+    .field-label {
+      font-size: .78rem;
+      font-weight: 600;
+      color: var(--slate-700);
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .date-input {
+      font-family: var(--font-sans);
+      font-size: .95rem;
+      border: 1.5px solid var(--slate-300);
+      border-radius: var(--radius-sm);
+      padding: .7rem .9rem;
+      color: var(--slate-900);
+      background: var(--white);
+      width: 100%;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+
+    .date-input:focus {
+      border-color: var(--green-600);
+      box-shadow: 0 0 0 3px rgba(30,122,77,.12);
+    }
+
+    .password-wrap {
+      position: relative;
+      display: block;
+    }
+
+    .password-wrap .date-input {
+      padding-right: 2.75rem;
+    }
+
+    .toggle-password {
+      position: absolute;
+      right: .7rem;
+      top: 50%;
+      transform: translateY(-50%);
+      border: none;
+      background: transparent;
+      color: var(--slate-500);
+      cursor: pointer;
+      font-size: 1rem;
+      line-height: 1;
+      padding: .2rem;
+    }
+
+    .toggle-password:focus {
+      outline: 2px solid rgba(30,122,77,.22);
+      border-radius: 4px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: .4rem;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      padding: .75rem 1rem;
+      font-family: var(--font-sans);
+      font-size: .88rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: filter .15s ease;
+    }
+
+    .btn:hover { filter: brightness(0.98); }
+
+    .btn-primary {
+      background: var(--green-700);
+      color: var(--white);
+      border-color: var(--green-700);
+      width: 100%;
+    }
+
+    .error-box {
+      color: var(--red-600);
+      background: var(--red-50);
+      padding: .7rem .8rem;
+      border-radius: var(--radius-sm);
+      margin-bottom: 1rem;
+      font-size: .85rem;
+      border: 1px solid rgba(192,57,43,.12);
+    }
+
+    .portal-link {
+      margin-top: 1rem;
+      text-align: center;
+      font-size: .82rem;
+      color: var(--slate-500);
+    }
+
+    .portal-link a {
+      color: var(--green-700);
+      text-decoration: none;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo-mark" aria-label="Zolon Healthcare Limited logo">
+        <img class="logo-image" src="../static/zolon-logo-no_bg.png" alt="Zolon Healthcare Limited" />
+      </div>
+      <div class="logo-text">
+        <div class="logo-company">Zolon Healthcare Ltd</div>
+        <div class="logo-title">Intelligent Solutions</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="card">
+      <div class="card-header">
+        <div class="lock-icon">🔐</div>
+        <h2 class="card-title">Admin Login</h2>
+      </div>
+
+      <form method="POST" action="/admin/login">
+        <div class="form-group">
+          <label class="field-label" for="password">Password</label>
+          <div class="password-wrap">
+            <input type="password" id="password" name="password" class="date-input" required autofocus />
+            <button type="button" class="toggle-password" aria-label="Show password" aria-pressed="false">👁️</button>
+          </div>
+        </div>
+
+        {% if error %}
+          <div class="error-box">{{ error }}</div>
+        {% endif %}
+
+        <button type="submit" class="btn btn-primary">Log In</button>
+      </form>
+
+      <div class="portal-link">
+        <a href="/submit" target="_blank" rel="noopener noreferrer">← Back to Rep Portal</a>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const passwordInput = document.getElementById('password');
+    const togglePasswordButton = document.querySelector('.toggle-password');
+
+    if (passwordInput && togglePasswordButton) {
+      togglePasswordButton.addEventListener('click', () => {
+        const isHidden = passwordInput.type === 'password';
+        passwordInput.type = isHidden ? 'text' : 'password';
+        togglePasswordButton.textContent = isHidden ? '🙈' : '👁️';
+        togglePasswordButton.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
+        togglePasswordButton.setAttribute('aria-pressed', String(isHidden));
+      });
+    }
+  </script>
+</body>
+</html>
