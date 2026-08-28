@@ -119,8 +119,8 @@ requirements.txt          Runtime dependencies
 ## Admin Access
 
 The admin dashboard is available at `/admin`. Access is protected by a password.
-Set the `ADMIN_PASSWORD` environment variable to secure your instance.
-The default password (if not set) is a random string – you must set it in production.
+Set the `ADMIN_PASSWORD` environment variable to secure the instance.
+The default password (if not set) is a random string, it must be set in production.
 
 ## Security note
 
