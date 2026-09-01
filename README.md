@@ -9,7 +9,7 @@ A Flask application for checking whether sales representatives' pharmacy visit p
 - Set the current TGIF date from **Set Current TGIF Date**.
 - View live rep submissions with rep name, pharmacy submission counts, and compliance totals.
 - Open a submission report in a modal without leaving the dashboard.
-- Inspect flagged images and download a CSV report.
+- Inspect flagged images and download a CSV report for each sumbmission.
 - Copy the rep portal link or open the portal directly.
 
 ### Sales rep portal
