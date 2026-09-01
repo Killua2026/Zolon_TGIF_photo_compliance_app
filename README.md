@@ -36,7 +36,7 @@ A Flask application for checking whether sales representatives' pharmacy visit p
 - **Backend:** Python 3.12+, Flask
 - **Image processing:** Pillow and pillow-heif
 - **Database:** SQLite locally, PostgreSQL when `DATABASE_URL` is configured
-- **Storage:** Supabase Storage when configured, with local-disk fallback
+- **Storage:** Supabase Storage when configured with local-disk fallback
 - **Frontend:** HTML, CSS, and vanilla JavaScript
 - **Production server:** Gunicorn is included in `requirements.txt`
 
